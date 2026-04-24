@@ -23,11 +23,12 @@ Manual test flow:
 # in a new session, from Claude Code's Bash tool:
 bw status  # locked response
 bw get password 'some-item'  # Ghostty opens, unlock, token cached
-tail /tmp/vault-gate.log  # verify hook fired
+tail "$XDG_RUNTIME_DIR/vault-gate.log"  # verify hook fired
 ```
 
 ## Don't
 
 - Don't reach into `~/.claude/settings.local.json` outside of `install.sh` / `uninstall.sh`. Manual JSON fiddling is how hooks drift.
 - Don't write the master password to stdin or any file.
-- Don't delete `/tmp/bw-session-token` unless you also re-unlock; the hook's caching logic assumes the token is authoritative while present.
+- Don't delete the session token (GNOME Keyring entry or `$XDG_RUNTIME_DIR/bw-session-token`) unless you also re-unlock; the hook's caching logic assumes the stored token is authoritative while present.
+- **Storage config** lives at `~/.config/vault-gate/config`. `STORAGE=keyring` (default) uses GNOME Keyring via `secret-tool`; `STORAGE=file` uses `$XDG_RUNTIME_DIR` (mode 700 tmpfs).

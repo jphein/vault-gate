@@ -7,10 +7,26 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_SCRIPTS="$HOME/.claude/scripts"
 SETTINGS="$HOME/.claude/settings.local.json"
+CONFIG_DIR="$HOME/.config/vault-gate"
+CONFIG_FILE="$CONFIG_DIR/config"
 
 echo ">>> Installing vault-gate from ${REPO_ROOT}..."
 
-# 1. Symlink scripts
+# 1. Create default config if not present
+mkdir -p "$CONFIG_DIR"
+if [ ! -f "$CONFIG_FILE" ]; then
+    cat > "$CONFIG_FILE" <<'EOF'
+# vault-gate storage backend for the BW session token.
+# keyring — GNOME Keyring via secret-tool (recommended, default)
+# file    — plaintext file in $XDG_RUNTIME_DIR (mode 700, RAM-backed, not on disk)
+STORAGE=keyring
+EOF
+    echo "  created $CONFIG_FILE (STORAGE=keyring)"
+else
+    echo "  config exists at $CONFIG_FILE (not overwritten)"
+fi
+
+# 2. Symlink scripts
 mkdir -p "$CLAUDE_SCRIPTS"
 for script in vault-gate.sh vault-unlock.sh; do
     target="$CLAUDE_SCRIPTS/$script"
@@ -73,4 +89,6 @@ PYEOF
 
 echo ""
 echo ">>> Installed. Restart Claude Code for the hook to take effect."
-echo ">>> To verify after restart: run any bw command; check /tmp/vault-gate.log."
+echo ">>> Config: $CONFIG_FILE"
+echo ">>> Logs:   \$XDG_RUNTIME_DIR/vault-gate.log  (e.g. /run/user/$(id -u)/vault-gate.log)"
+echo ">>> To verify: run any bw command from Claude Code; watch the log above."

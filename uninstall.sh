@@ -35,4 +35,20 @@ if changed:
 PYEOF
 fi
 
-echo ">>> Uninstalled."
+# Remove cached session token from wherever it's stored
+CONFIG_FILE="$HOME/.config/vault-gate/config"
+STORAGE="keyring"
+# shellcheck source=/dev/null
+[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE" 2>/dev/null || true
+
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [ "$STORAGE" = "keyring" ] && command -v secret-tool >/dev/null 2>&1; then
+    secret-tool clear service vault-gate account bw-session 2>/dev/null && \
+        echo "  cleared vault-gate entry from GNOME Keyring" || true
+fi
+rm -f "$RUNTIME_DIR/bw-session-token" "$RUNTIME_DIR/bw-unlock-status" \
+      "$RUNTIME_DIR/bw-unlock-output" "$RUNTIME_DIR/vault-gate.log"
+echo "  cleared runtime files from $RUNTIME_DIR"
+
+echo ""
+echo ">>> Uninstalled. Config left at $CONFIG_FILE (remove manually if desired)."

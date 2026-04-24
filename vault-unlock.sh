@@ -1,18 +1,42 @@
 #!/bin/bash
 # vault-unlock.sh — Interactive vault unlock with Ghostty popup
 # Called by vault-gate.sh when vault is locked.
-# Writes session token to /tmp/bw-session-token on success.
+# Writes session token via configured storage backend on success.
 # Password input is handled by bw itself (secure TTY read).
-# bw's native output (padlock, prompt) is shown to the user.
 
 set -euo pipefail
 
 BW="$HOME/.npm-global/bin/bw"
-SESSION_FILE="/tmp/bw-session-token"
-STATUS_FILE="/tmp/bw-unlock-status"
-OUTPUT_FILE="/tmp/bw-unlock-output"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+STATUS_FILE="$RUNTIME_DIR/bw-unlock-status"
+OUTPUT_FILE="$RUNTIME_DIR/bw-unlock-output"
 
-rm -f "$SESSION_FILE" "$STATUS_FILE" "$OUTPUT_FILE"
+# --- Config (must match vault-gate.sh) ---
+CONFIG_FILE="$HOME/.config/vault-gate/config"
+STORAGE="keyring"
+# shellcheck source=/dev/null
+[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
+
+if [ "$STORAGE" = "keyring" ] && ! command -v secret-tool >/dev/null 2>&1; then
+    STORAGE="file"
+fi
+
+SESSION_FILE="$RUNTIME_DIR/bw-session-token"
+
+token_write() {
+    local token="$1"
+    if [ "$STORAGE" = "keyring" ]; then
+        printf '%s\n' "$token" | secret-tool store \
+            --label="Bitwarden session (vault-gate)" \
+            service vault-gate \
+            account bw-session 2>/dev/null
+    else
+        printf '%s' "$token" > "$SESSION_FILE"
+        chmod 600 "$SESSION_FILE"
+    fi
+}
+
+rm -f "$STATUS_FILE" "$OUTPUT_FILE"
 echo "pending" > "$STATUS_FILE"
 
 # --- Colors ---
@@ -24,7 +48,7 @@ YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 RESET='\033[0m'
 
-# --- Spinner function (runs in background) ---
+# --- Spinner ---
 spinner() {
     local msg="$1"
     local frames=('   ' '.  ' '.. ' '...')
@@ -48,6 +72,11 @@ stop_spinner() {
 echo ""
 echo -e "  ${DIM}Claude Code needs vault access.${RESET}"
 echo -e "  ${DIM}Input is hidden — just type and press Enter.${RESET}"
+if [ "$STORAGE" = "keyring" ]; then
+    echo -e "  ${DIM}Token will be stored in GNOME Keyring.${RESET}"
+else
+    echo -e "  ${DIM}Token will be stored in \$XDG_RUNTIME_DIR (RAM, mode 700).${RESET}"
+fi
 echo ""
 
 ATTEMPTS=0
@@ -56,13 +85,10 @@ MAX_ATTEMPTS=5
 while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
     ATTEMPTS=$((ATTEMPTS + 1))
 
-    # Let bw run with its native output visible (padlock, prompt, etc.)
-    # tee captures output while displaying it — bw reads password from /dev/tty
     rm -f "$OUTPUT_FILE"
     "$BW" unlock 2>&1 | tee "$OUTPUT_FILE" || true
     OUTPUT=$(cat "$OUTPUT_FILE" 2>/dev/null || true)
 
-    # Password submitted — show processing feedback
     echo ""
     spinner "Verifying" &
     SPINNER_PID=$!
@@ -77,7 +103,6 @@ while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
         continue
     fi
 
-    # Extract session token
     TOKEN=$(echo "$OUTPUT" | grep -oP 'BW_SESSION="\K[^"]+' || true)
 
     if [ -n "$TOKEN" ]; then
@@ -85,12 +110,9 @@ while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
         echo -e "  ${GREEN}${BOLD}Password accepted${RESET}"
         echo ""
 
-        # Save token
-        echo "$TOKEN" > "$SESSION_FILE"
-        chmod 600 "$SESSION_FILE"
+        token_write "$TOKEN"
         echo "success" > "$STATUS_FILE"
 
-        # Sync vault with feedback
         spinner "Syncing vault" &
         SPINNER_PID=$!
         BW_SESSION="$TOKEN" "$BW" sync --quiet 2>/dev/null || true
