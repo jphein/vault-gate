@@ -1,5 +1,7 @@
 # vault-gate
 
+**[https://jphein.github.io/vault-gate/](https://jphein.github.io/vault-gate/)** · **[GitHub](https://github.com/jphein/vault-gate)**
+
 Claude Code hook that auto-unlocks your Vaultwarden vault whenever a `bw` command is about to run. When the vault is locked, it pops a Ghostty window where you enter your master password; the `$BW_SESSION` token is captured and cached — by default in GNOME Keyring — so subsequent `bw` calls in the session just work.
 
 ## What's in here
