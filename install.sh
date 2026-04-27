@@ -10,6 +10,39 @@ SETTINGS="$HOME/.claude/settings.local.json"
 CONFIG_DIR="$HOME/.config/vault-gate"
 CONFIG_FILE="$CONFIG_DIR/config"
 
+# Detect installs from inside a live Claude Code session. Rewriting
+# ~/.claude/settings.local.json mid-session can detach the in-memory hook
+# chain (Claude Code loads hooks at startup, not on file change) — so the
+# very hook you just installed silently won't fire until you restart.
+if [ -n "${CLAUDE_CODE_ENTRYPOINT:-}" ] && [ -z "${VAULT_GATE_FROM_CLAUDE:-}" ]; then
+    RED='\033[1;31m'; YELLOW='\033[1;33m'; RESET='\033[0m'
+    {
+        echo ""
+        printf "${RED}╔══════════════════════════════════════════════════════════════════╗${RESET}\n"
+        printf "${RED}║  WARNING: installing vault-gate from inside Claude Code          ║${RESET}\n"
+        printf "${RED}╚══════════════════════════════════════════════════════════════════╝${RESET}\n"
+        printf "${YELLOW}This rewrites ~/.claude/settings.local.json. Claude Code loads hooks${RESET}\n"
+        printf "${YELLOW}at session start, not on file change — modifying it mid-session can${RESET}\n"
+        printf "${YELLOW}detach the entire PreToolUse-Bash hook chain until you restart.${RESET}\n"
+        printf "${YELLOW}You'll get the wrapper + scripts on disk, but no hook will fire in${RESET}\n"
+        printf "${YELLOW}this session — including the vault-gate hook itself.${RESET}\n"
+        echo ""
+        printf "${YELLOW}Recommended: cancel here, restart Claude Code, then run install.sh${RESET}\n"
+        printf "${YELLOW}from a fresh terminal (or set VAULT_GATE_FROM_CLAUDE=1 to skip this${RESET}\n"
+        printf "${YELLOW}prompt for automation).${RESET}\n"
+        echo ""
+    } >&2
+    if [ -t 0 ]; then
+        read -r -p "Continue anyway? [y/N] " ANSWER
+        case "${ANSWER:-}" in
+            y|Y|yes|YES) echo "  proceeding (you opted in)" >&2 ;;
+            *) echo "  aborted." >&2; exit 1 ;;
+        esac
+    else
+        echo "  non-interactive shell — proceeding. Restart Claude Code afterward." >&2
+    fi
+fi
+
 echo ">>> Installing vault-gate from ${REPO_ROOT}..."
 
 # 1. Create default config if not present
