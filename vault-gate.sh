@@ -15,6 +15,12 @@ RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 STATUS_FILE="$RUNTIME_DIR/bw-unlock-status"
 LOG="$RUNTIME_DIR/vault-gate.log"
 
+# Always log invocation so the absence of an unlock window doesn't hide whether
+# the hook actually fired. Runs before any conditional, regardless of vault state.
+{
+    echo "[$(date -Iseconds)] entered: pid=$$ ppid=$PPID parent=$(ps -o comm= -p $PPID 2>/dev/null || echo '?') argv=$0"
+} >> "$LOG" 2>/dev/null || true
+
 # --- Config ---
 # STORAGE=keyring (default) — GNOME Keyring via secret-tool
 # STORAGE=file             — plaintext in $XDG_RUNTIME_DIR (mode 700 dir)
