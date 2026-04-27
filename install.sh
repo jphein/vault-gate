@@ -37,7 +37,43 @@ for script in vault-gate.sh vault-unlock.sh; do
     echo "  ln -s $src $target"
 done
 
-# 2. Register PreToolUse-Bash hook in settings.local.json (idempotent)
+# 3. Install bw wrapper to ~/.local/bin/bw so cached BW_SESSION reaches the real bw
+LOCAL_BIN="$HOME/.local/bin"
+mkdir -p "$LOCAL_BIN"
+WRAPPER_TARGET="$LOCAL_BIN/bw"
+WRAPPER_SRC="$REPO_ROOT/bw-wrapper.sh"
+if [ -e "$WRAPPER_TARGET" ] && [ ! -L "$WRAPPER_TARGET" ]; then
+    echo "  WARNING: $WRAPPER_TARGET exists and is not a symlink — leaving it alone."
+    echo "           Move or remove it, then re-run install.sh."
+elif [ -L "$WRAPPER_TARGET" ] && [ "$(readlink "$WRAPPER_TARGET")" = "$WRAPPER_SRC" ]; then
+    echo "  wrapper already linked: $WRAPPER_TARGET -> $WRAPPER_SRC"
+else
+    rm -f "$WRAPPER_TARGET"
+    ln -s "$WRAPPER_SRC" "$WRAPPER_TARGET"
+    echo "  ln -s $WRAPPER_SRC $WRAPPER_TARGET"
+fi
+
+# 4. Ensure ~/.local/bin precedes the real bw in PATH (idempotent, marker-guarded)
+PATH_MARKER_BEGIN="# >>> vault-gate PATH (added by ~/Projects/vault-gate/install.sh) >>>"
+PATH_MARKER_END="# <<< vault-gate PATH <<<"
+PATH_SNIPPET="$PATH_MARKER_BEGIN
+case \":\$PATH:\" in
+    *\":\$HOME/.local/bin:\"*) ;;
+    *) export PATH=\"\$HOME/.local/bin:\$PATH\" ;;
+esac
+$PATH_MARKER_END"
+
+for rcfile in "$HOME/.bashrc" "$HOME/.profile"; do
+    [ -f "$rcfile" ] || continue
+    if grep -qF "$PATH_MARKER_BEGIN" "$rcfile"; then
+        echo "  PATH snippet already in $rcfile"
+    else
+        printf '\n%s\n' "$PATH_SNIPPET" >> "$rcfile"
+        echo "  appended PATH snippet to $rcfile"
+    fi
+done
+
+# 5. Register PreToolUse-Bash hook in settings.local.json (idempotent)
 if [ ! -f "$SETTINGS" ]; then
     echo '{}' > "$SETTINGS"
 fi
@@ -88,7 +124,11 @@ print(f"  registered PreToolUse-Bash vault-gate hook in {p}")
 PYEOF
 
 echo ""
-echo ">>> Installed. Restart Claude Code for the hook to take effect."
+echo ">>> Installed."
+echo ">>> Restart Claude Code (and re-source your shell rc, or open a new terminal)"
+echo ">>> so the PATH change picks up ~/.local/bin/bw ahead of ~/.npm-global/bin/bw."
 echo ">>> Config: $CONFIG_FILE"
 echo ">>> Logs:   \$XDG_RUNTIME_DIR/vault-gate.log  (e.g. /run/user/$(id -u)/vault-gate.log)"
-echo ">>> To verify: run any bw command from Claude Code; watch the log above."
+echo ">>> Verify: \`which bw\` should print $LOCAL_BIN/bw, then a 'bw status' from"
+echo ">>>         a fresh Claude Code session should report 'unlocked' after the"
+echo ">>>         hook's first unlock prompt completes."

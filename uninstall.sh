@@ -4,6 +4,7 @@ set -euo pipefail
 
 CLAUDE_SCRIPTS="$HOME/.claude/scripts"
 SETTINGS="$HOME/.claude/settings.local.json"
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 echo ">>> Uninstalling vault-gate..."
 
@@ -12,6 +13,38 @@ for script in vault-gate.sh vault-unlock.sh; do
     if [ -L "$target" ]; then
         rm -f "$target"
         echo "  rm $target"
+    fi
+done
+
+# Remove bw wrapper symlink only if it points at our script
+WRAPPER_TARGET="$HOME/.local/bin/bw"
+WRAPPER_SRC="$REPO_ROOT/bw-wrapper.sh"
+if [ -L "$WRAPPER_TARGET" ] && [ "$(readlink "$WRAPPER_TARGET")" = "$WRAPPER_SRC" ]; then
+    rm -f "$WRAPPER_TARGET"
+    echo "  rm $WRAPPER_TARGET"
+elif [ -e "$WRAPPER_TARGET" ]; then
+    echo "  skipped $WRAPPER_TARGET (not our symlink)"
+fi
+
+# Remove PATH snippet from rc files (marker-guarded)
+PATH_MARKER_BEGIN="# >>> vault-gate PATH (added by ~/Projects/vault-gate/install.sh) >>>"
+PATH_MARKER_END="# <<< vault-gate PATH <<<"
+for rcfile in "$HOME/.bashrc" "$HOME/.profile"; do
+    [ -f "$rcfile" ] || continue
+    if grep -qF "$PATH_MARKER_BEGIN" "$rcfile"; then
+        # Delete the marker block (including markers and inner lines)
+        python3 - "$rcfile" "$PATH_MARKER_BEGIN" "$PATH_MARKER_END" <<'PYEOF'
+import sys, re
+path, begin, end = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    text = f.read()
+pattern = re.compile(r'\n?' + re.escape(begin) + r'.*?' + re.escape(end) + r'\n?', re.DOTALL)
+new_text, n = pattern.subn('\n', text)
+if n:
+    with open(path, 'w') as f:
+        f.write(new_text)
+PYEOF
+        echo "  removed PATH snippet from $rcfile"
     fi
 done
 

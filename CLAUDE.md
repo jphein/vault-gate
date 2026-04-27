@@ -13,6 +13,8 @@ A Claude Code hook that auto-unlocks your Vaultwarden vault when a `bw` command 
 - **Absolute paths everywhere.** Hook shells may not inherit `~/.npm-global/bin` or `/snap/bin`. Use `$HOME/.npm-global/bin/bw` and `/snap/bin/ghostty`.
 - **Don't redirect `bw unlock --raw > file`.** Swallows the password prompt. Use `bw unlock` with `tee` to capture output while keeping the PTY.
 - **Idempotency matters.** `install.sh` and `uninstall.sh` must be safe to re-run.
+- **Hooks can't mutate the next process's env.** PreToolUse hooks gate (exit 0 / 2) but cannot inject `BW_SESSION` into the subsequent `bw` call. That's why `bw-wrapper.sh` exists: a `~/.local/bin/bw` PATH shim that reads the cached token and exports `BW_SESSION` before exec'ing the real bw. Don't try to "fix" this by writing exports into `.bashrc` — Claude Code's Bash tool runs non-interactive non-login shells and won't source it.
+- **Don't clobber a non-symlink `~/.local/bin/bw`.** If a user has their own `bw` shim there, leave it; print a warning. The check is `[ -L "$target" ] && [ "$(readlink "$target")" = "$src" ]`.
 
 ## Testing
 

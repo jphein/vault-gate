@@ -8,8 +8,9 @@ Claude Code hook that auto-unlocks your Vaultwarden vault whenever a `bw` comman
 
 - **`vault-gate.sh`** — PreToolUse hook entry. Checks if the vault is unlocked; if not, spawns `vault-unlock.sh` in a Ghostty window and polls for the session token. Returns exit 0 (allow) on success, exit 2 (block) on failure.
 - **`vault-unlock.sh`** — Runs *inside* the Ghostty window. Handles the `bw unlock` prompt, retries on wrong password (up to 5 attempts), writes the session token via the configured storage backend on success.
-- **`install.sh`** — Creates symlinks in `~/.claude/scripts/`, writes a default config to `~/.config/vault-gate/config`, and registers the hook in `~/.claude/settings.local.json` (idempotent).
-- **`uninstall.sh`** — Removes symlinks, hook entry, keyring credentials, and runtime files.
+- **`bw-wrapper.sh`** — Tiny shim symlinked to `~/.local/bin/bw`. Reads the cached session from the configured storage and exports `BW_SESSION` before exec'ing the real `~/.npm-global/bin/bw`. Without this, Claude Code's Bash tool never inherits `BW_SESSION`, so each new `bw` invocation appears locked even after a successful unlock.
+- **`install.sh`** — Creates symlinks in `~/.claude/scripts/` and `~/.local/bin/`, ensures `~/.local/bin` precedes the real bw in `PATH` (via a marker-guarded snippet in `.bashrc`/`.profile`), writes a default config to `~/.config/vault-gate/config`, and registers the hook in `~/.claude/settings.local.json` (idempotent).
+- **`uninstall.sh`** — Removes symlinks, the hook entry, the PATH snippet, keyring credentials, and runtime files.
 
 ## Token storage
 
@@ -33,6 +34,10 @@ Install `secret-tool` on Ubuntu/Debian:
 ```bash
 sudo apt install libsecret-tools
 ```
+
+## Why a wrapper is needed
+
+Claude Code's PreToolUse hooks can only allow or block a tool call (exit 0 / exit 2); they cannot mutate the environment of the subsequent process. So when `vault-gate.sh` writes the unlocked `BW_SESSION` into GNOME Keyring (or `$XDG_RUNTIME_DIR`), the next `bw` invocation still has no `BW_SESSION` in its env — it queries the daemon, gets back `locked`, and the cache is effectively useless. The shim at `~/.local/bin/bw` reads the cached token and exports `BW_SESSION` itself before exec'ing the real `bw`, closing the loop. A bash function in `.bashrc` would be cleaner but won't work — Claude Code's Bash tool runs `bash -c '…'` (non-interactive, non-login), which doesn't source `.bashrc` at all.
 
 ## How it integrates with Claude Code hooks
 
@@ -64,6 +69,7 @@ cd ~/Projects/vault-gate
 - **PTY for `bw unlock`.** `bw unlock` uses the TTY directly for the password prompt. `vault-unlock.sh` keeps bw's native output visible using `tee` rather than redirecting stdout — the classic `bw unlock --raw > file` pattern silently swallows the prompt.
 - **Absolute paths.** Both scripts use `$HOME/.npm-global/bin/bw` explicitly, because Ghostty-spawned bash shells may not inherit the full PATH.
 - **Hot reload.** `settings.local.json` changes take effect on the next Claude Code session. Running sessions keep the hook config from session start.
+- **PATH order.** The wrapper at `~/.local/bin/bw` only works if `~/.local/bin` precedes `~/.npm-global/bin` in `$PATH`. `install.sh` appends a marker-guarded snippet to your `.bashrc` and `.profile` that prepends `~/.local/bin`. Open a new terminal (or `source ~/.bashrc`) after install. Verify with `which bw` — it should print `~/.local/bin/bw`, not `~/.npm-global/bin/bw`.
 
 ## Troubleshooting
 
