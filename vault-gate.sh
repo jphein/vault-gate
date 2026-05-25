@@ -10,6 +10,9 @@ UNLOCK_SCRIPT="$HOME/.claude/scripts/vault-unlock.sh"
 POLL_INTERVAL=1
 MAX_WAIT=120  # seconds
 
+# D-Bus address needed for secret-tool in shells spawned outside GNOME session
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
+
 # User-private tmpfs (mode 700, cleaned on logout, not written to disk)
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 STATUS_FILE="$RUNTIME_DIR/bw-unlock-status"
