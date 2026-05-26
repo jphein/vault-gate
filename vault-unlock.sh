@@ -6,18 +6,11 @@
 
 set -euo pipefail
 
-# Import DBUS from the user's running Ghostty so secret-tool can reach
-# the GNOME Keyring. Snap Ghostty doesn't always inherit DBUS_SESSION_BUS_ADDRESS.
-if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
-    GHOSTTY_PID="$(pgrep -u "$USER" -x ghostty 2>/dev/null | head -1)"
-    if [ -n "$GHOSTTY_PID" ] && [ -r "/proc/$GHOSTTY_PID/environ" ]; then
-        while IFS= read -r var; do
-            case "$var" in
-                DBUS_SESSION_BUS_ADDRESS=*) export "$var" ;;
-            esac
-        done < <(tr '\0' '\n' < "/proc/$GHOSTTY_PID/environ")
-    fi
-fi
+# Force DBUS to the host session bus so secret-tool reaches GNOME Keyring.
+# Snap Ghostty sets its own DBUS_SESSION_BUS_ADDRESS pointing to a confined
+# bus where secret-tool silently fails to write to the host keyring —
+# override unconditionally.
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
 
 BW="$HOME/.npm-global/bin/bw"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -43,6 +36,13 @@ token_write() {
             --label="Bitwarden session (vault-gate)" \
             service vault-gate \
             account bw-session 2>/dev/null
+        local readback
+        readback=$(secret-tool lookup service vault-gate account bw-session 2>/dev/null || true)
+        if [ -z "$readback" ]; then
+            echo -e "  ${YELLOW}Keyring write failed — falling back to file storage${RESET}" >&2
+            printf '%s' "$token" > "$SESSION_FILE"
+            chmod 600 "$SESSION_FILE"
+        fi
     else
         printf '%s' "$token" > "$SESSION_FILE"
         chmod 600 "$SESSION_FILE"

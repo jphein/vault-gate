@@ -44,7 +44,11 @@ SESSION_FILE="$RUNTIME_DIR/bw-session-token"
 
 token_read() {
     if [ "$STORAGE" = "keyring" ]; then
-        secret-tool lookup service vault-gate account bw-session 2>/dev/null || true
+        local val
+        val=$(secret-tool lookup service vault-gate account bw-session 2>/dev/null || true)
+        if [ -n "$val" ]; then echo "$val"; return; fi
+        # vault-unlock.sh may have fallen back to file if keyring write failed
+        [ -f "$SESSION_FILE" ] && cat "$SESSION_FILE" || true
     else
         [ -f "$SESSION_FILE" ] && cat "$SESSION_FILE" || true
     fi
@@ -53,9 +57,8 @@ token_read() {
 token_clear() {
     if [ "$STORAGE" = "keyring" ]; then
         secret-tool clear service vault-gate account bw-session 2>/dev/null || true
-    else
-        rm -f "$SESSION_FILE"
     fi
+    rm -f "$SESSION_FILE"
 }
 
 # --- Check if vault is already unlocked ---
@@ -92,29 +95,43 @@ if [ -f "$STATUS_FILE" ] && [ "$(cat "$STATUS_FILE" 2>/dev/null)" = "unlocking" 
 else
     rm -f "$STATUS_FILE"
 
-    # Import display env from JP's running Ghostty. Shells spawned by the
-    # Claude Code Bash tool (and by PreToolUse hooks running under it) do
-    # not inherit DISPLAY/WAYLAND_DISPLAY. Without these, ghostty exits
-    # silently with no visible window.
-    GHOSTTY_PID="$(pgrep -u "$USER" -x ghostty 2>/dev/null | head -1)"
-    if [ -n "$GHOSTTY_PID" ] && [ -r "/proc/$GHOSTTY_PID/environ" ]; then
-        while IFS= read -r var; do
-            case "$var" in
-                DISPLAY=*|WAYLAND_DISPLAY=*|XDG_RUNTIME_DIR=*|DBUS_SESSION_BUS_ADDRESS=*|GDK_BACKEND=*)
-                    export "$var"
-                    ;;
-            esac
-        done < <(tr '\0' '\n' < "/proc/$GHOSTTY_PID/environ")
-    fi
-
     {
-        echo "[$(date -Iseconds)] spawn: DISPLAY=${DISPLAY:-unset} WAYLAND=${WAYLAND_DISPLAY:-unset}"
-        echo "[$(date -Iseconds)] ghostty_pid=${GHOSTTY_PID:-none} storage=$STORAGE unlock_script=$UNLOCK_SCRIPT"
+        echo "[$(date -Iseconds)] storage=$STORAGE unlock_script=$UNLOCK_SCRIPT"
     } >> "$LOG" 2>/dev/null || true
 
-    snap run ghostty -e bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
+    # Prefer wsh (WaveTerm) — runs natively with full keyring access.
+    # Fall back to gnome-terminal (also native), then Ghostty snap.
+    if command -v wsh >/dev/null 2>&1; then
+        wsh run -m -- bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
+        echo "VAULT: WaveTerm unlock block opened. Enter master password there." >&2
+    else
+        # Need DISPLAY env for standalone terminal windows
+        local gui_pid
+        gui_pid=$(pgrep -u "$USER" -x gnome-shell 2>/dev/null | head -1 \
+            || pgrep -u "$USER" -x gnome-session 2>/dev/null | head -1 \
+            || true)
+        if [ -n "$gui_pid" ] && [ -r "/proc/$gui_pid/environ" ]; then
+            while IFS= read -r var; do
+                case "$var" in
+                    DISPLAY=*|WAYLAND_DISPLAY=*|XDG_RUNTIME_DIR=*|GDK_BACKEND=*)
+                        export "$var" ;;
+                esac
+            done < <(tr '\0' '\n' < "/proc/$gui_pid/environ")
+        fi
+        export DISPLAY="${DISPLAY:-:0}"
+        export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+
+        if command -v gnome-terminal >/dev/null 2>&1; then
+            gnome-terminal -- bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
+        elif [ -x /snap/bin/ghostty ]; then
+            snap run ghostty -e bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
+        else
+            echo "BLOCKED: No terminal (wsh/gnome-terminal/ghostty) found." >&2
+            exit 2
+        fi
+        echo "VAULT: Unlock window opened. Enter master password there." >&2
+    fi
     disown
-    echo "VAULT: Ghostty unlock window opened. Enter master password there." >&2
 fi
 
 # --- Wait for unlock to complete ---
