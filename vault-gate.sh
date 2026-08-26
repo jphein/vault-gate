@@ -99,38 +99,36 @@ else
         echo "[$(date -Iseconds)] storage=$STORAGE unlock_script=$UNLOCK_SCRIPT"
     } >> "$LOG" 2>/dev/null || true
 
-    # Prefer wsh (WaveTerm) — runs natively with full keyring access.
-    # Fall back to gnome-terminal (also native), then Ghostty snap.
-    if command -v wsh >/dev/null 2>&1; then
-        wsh run -m -- bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
-        echo "VAULT: WaveTerm unlock block opened. Enter master password there." >&2
-    else
-        # Need DISPLAY env for standalone terminal windows
-        local gui_pid
-        gui_pid=$(pgrep -u "$USER" -x gnome-shell 2>/dev/null | head -1 \
-            || pgrep -u "$USER" -x gnome-session 2>/dev/null | head -1 \
-            || true)
-        if [ -n "$gui_pid" ] && [ -r "/proc/$gui_pid/environ" ]; then
-            while IFS= read -r var; do
-                case "$var" in
-                    DISPLAY=*|WAYLAND_DISPLAY=*|XDG_RUNTIME_DIR=*|GDK_BACKEND=*)
-                        export "$var" ;;
-                esac
-            done < <(tr '\0' '\n' < "/proc/$gui_pid/environ")
-        fi
-        export DISPLAY="${DISPLAY:-:0}"
-        export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
-
-        if command -v gnome-terminal >/dev/null 2>&1; then
-            gnome-terminal -- bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
-        elif [ -x /snap/bin/ghostty ]; then
-            snap run ghostty -e bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
-        else
-            echo "BLOCKED: No terminal (wsh/gnome-terminal/ghostty) found." >&2
-            exit 2
-        fi
-        echo "VAULT: Unlock window opened. Enter master password there." >&2
+    # Prefer native Ghostty (/usr/bin/ghostty, GPU-accelerated, host keyring),
+    # then gnome-terminal. The old wsh (WaveTerm) and snap-Ghostty branches are
+    # gone (2026-08-26): waveterm + the ghostty snap were removed in the de-snap
+    # sweep, and the wsh branch failed silently when WaveTerm wasn't running —
+    # no window, session stuck until the hook timeout.
+    # Need DISPLAY env for standalone terminal windows
+    local gui_pid
+    gui_pid=$(pgrep -u "$USER" -x gnome-shell 2>/dev/null | head -1 \
+        || pgrep -u "$USER" -x gnome-session 2>/dev/null | head -1 \
+        || true)
+    if [ -n "$gui_pid" ] && [ -r "/proc/$gui_pid/environ" ]; then
+        while IFS= read -r var; do
+            case "$var" in
+                DISPLAY=*|WAYLAND_DISPLAY=*|XDG_RUNTIME_DIR=*|GDK_BACKEND=*)
+                    export "$var" ;;
+            esac
+        done < <(tr '\0' '\n' < "/proc/$gui_pid/environ")
     fi
+    export DISPLAY="${DISPLAY:-:0}"
+    export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+
+    if [ -x /usr/bin/ghostty ]; then
+        /usr/bin/ghostty --title="Vault Unlock" -e bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
+    elif command -v gnome-terminal >/dev/null 2>&1; then
+        gnome-terminal -- bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
+    else
+        echo "BLOCKED: No terminal (ghostty/gnome-terminal) found." >&2
+        exit 2
+    fi
+    echo "VAULT: Unlock window opened. Enter master password there." >&2
     disown
 fi
 

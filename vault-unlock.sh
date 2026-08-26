@@ -7,9 +7,9 @@
 set -euo pipefail
 
 # Force DBUS to the host session bus so secret-tool reaches GNOME Keyring.
-# Snap Ghostty sets its own DBUS_SESSION_BUS_ADDRESS pointing to a confined
-# bus where secret-tool silently fails to write to the host keyring —
-# override unconditionally.
+# (Originally a snap-Ghostty confinement workaround; kept because it is a
+# harmless no-op natively and protects against any launcher that hands us a
+# nonstandard bus address.)
 export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
 
 BW="$HOME/.npm-global/bin/bw"
