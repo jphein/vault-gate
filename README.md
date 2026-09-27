@@ -80,4 +80,4 @@ cd ~/Projects/vault-gate
 
 ## License
 
-MIT
+AGPL-3.0-or-later © 2026 Jeffrey Pine Hein. See [LICENSE](LICENSE).
