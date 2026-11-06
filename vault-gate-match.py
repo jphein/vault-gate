@@ -45,6 +45,8 @@ def scan(line: str, state: str, lits: list):
     heredoc scan); subs are the $( ) and backtick bodies, which execute and are judged on their own."""
     out, nq, subs, heredocs, i, n = [], [], [], [], 0, len(line)
 
+    open_depth = [0]   # >0 after the loop: a $( that did not close on this line (its body goes on next line)
+
     def take_subst(i):
         if line.startswith("$(", i):
             depth, j = 1, i + 2
@@ -53,7 +55,10 @@ def scan(line: str, state: str, lits: list):
                     depth += 1; j += 2; continue
                 depth += (line[j] == "(") - (line[j] == ")")
                 j += 1
-            subs.append(line[i + 2:j - 1] if depth == 0 else line[i + 2:])
+            if depth == 0:
+                subs.append(line[i + 2:j - 1])
+            else:
+                subs.append(line[i + 2:]); open_depth[0] = depth
             return j
         j = line.find("`", i + 1)
         subs.append(line[i + 1:j] if j >= 0 else line[i + 1:])
@@ -94,7 +99,22 @@ def scan(line: str, state: str, lits: list):
         if line.startswith("$(", i) or c == "`":
             i = take_subst(i); out.append("_SUB_"); continue
         out.append(SEPMAP.get(c, c)); i += 1
+    if open_depth[0]:
+        state = "p%d%s" % (open_depth[0], state)   # e.g. p1d: one open paren, begun inside double quotes
     return "".join(out), "".join(nq), state, subs, heredocs
+
+
+def continue_paren(line: str, depth: int):
+    """Feed one more raw line into an open $( … ): returns (body_part, new_depth, rest_of_line_after_close)."""
+    j = 0
+    while j < len(line) and depth:
+        if line.startswith("$(", j):
+            depth += 1; j += 2; continue
+        depth += (line[j] == "(") - (line[j] == ")")
+        j += 1
+    if depth == 0:
+        return line[:j - 1], 0, line[j:]
+    return line, depth, ""
 
 
 RAW_SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")   # inside an unquoted heredoc body quotes do not suppress expansion
@@ -185,7 +205,7 @@ def split_commands(code: str):
 
 
 def _trips(text: str) -> bool:
-    state, lits, tags, buf, pending = "n", [], [], [], []
+    state, lits, tags, buf, pending, pbody = "n", [], [], [], [], []
     for line in text.replace("\\\n", "").split("\n"):   # bash joins a backslash-newline before anything else
         if tags and state == "n" and not buf:            # inside a heredoc body
             tag, expands, dash = tags[0]
@@ -198,11 +218,33 @@ def _trips(text: str) -> bool:
             continue
         if not line.strip() and state == "n" and not buf:
             continue
+        if state.startswith("p"):                         # inside a $( … ) that began on an earlier line
+            m = re.fullmatch(r"p(\d+)([nd])", state)
+            part, depth, rest = continue_paren(line, int(m.group(1)))
+            pbody.append(part)
+            if depth:
+                continue
+            if _trips("\n".join(pbody)):                  # the whole body, heredocs inside it included
+                return True
+            pbody, state = [], m.group(2)                  # back to the quote state the $( began in
+            buf.append("_SUB_")
+            line = rest
+            if not line.strip() and state == "n":
+                logical, buf = "\n".join(buf), []
+                for words in split_commands(logical):
+                    if head_is_bw(words, lits):
+                        return True
+                tags.extend(pending); pending = []
+                continue
         code, nq, state, subs, heredocs = scan(line, state, lits)
         buf.append(code); pending.extend(heredocs)
+        if state.startswith("p"):
+            pbody = [subs.pop()]                           # the partial body; judged once the parens close
         for body in subs:
             if _trips(body):
                 return True
+        if state.startswith("p"):
+            continue
         if state == "s":
             lits[-1] += "\n"; continue                    # the literal goes on next line
         if state == "d":

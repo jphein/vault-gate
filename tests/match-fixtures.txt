@@ -95,3 +95,8 @@ trip|env --split-string='bw status'
 pass|cat <<EOF<NL>  EOF<NL>bw status<NL>EOF
 trip|cat <<-EOF<NL>	EOF<NL>bw status
 pass|X=bw; echo "$X"
+# the hook's own false trip of 2026-11-06 13:0x: a quoted heredoc inside a multi-line $( ) PR body with `bw ` in markdown backticks
+pass|gh pr create --title "x" --body "$(cat <<'EOF'<NL>The hook grepped for `bw ` anywhere.<NL>Now `bw status` only at a command position.<NL>EOF<NL>)" 2>&1 | tail -1
+trip|gh pr create --body "$(cat <<'EOF'<NL>text<NL>EOF<NL>)"; bw status
+trip|X="$(cat <<EOF<NL>$(bw get password y)<NL>EOF<NL>)"
+pass|git commit -q -F - <<'EOF'<NL>fix: `bw status` in docs<NL><NL>Co-Authored-By: x<NL>EOF
