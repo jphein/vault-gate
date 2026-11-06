@@ -44,7 +44,8 @@ if [ "$STORAGE" = "keyring" ] && ! command -v secret-tool >/dev/null 2>&1; then
 fi
 
 SESSION_FILE="$RUNTIME_DIR/bw-session-token"
-LOCKFILE="$RUNTIME_DIR/vault-gate.lockfile"   # one flock serialises: token clear vs publish, and the whole launch decision
+LOCKFILE="$RUNTIME_DIR/vault-gate.lockfile"     # flock: the whole launch decision (inspect, reclaim, probe, launch, card)
+TOKENLOCK="$RUNTIME_DIR/vault-gate.tokenlock"   # flock: token clear (here) vs token publish (vault-unlock.sh); never held long
 
 # --- Storage helpers ---
 
@@ -69,7 +70,7 @@ token_clear() {   # clear ONLY the value we found stale, under the lock the publ
             secret-tool clear service vault-gate account bw-session 2>/dev/null || true
         fi
         rm -f "$SESSION_FILE"
-    ) 8>"$LOCKFILE"
+    ) 8>"$TOKENLOCK"
 }
 
 # --- Check if vault is already unlocked ---
@@ -115,6 +116,9 @@ if [ -d "$LOCK" ] && [ $(( $(date +%s) - $(stat -c %Y "$LOCK") )) -lt "$LOCK_TTL
     exit 2
 fi
 
+if [ -f "$STATUS_FILE" ] && [ $(( $(date +%s) - $(stat -c %Y "$STATUS_FILE") )) -ge "$LOCK_TTL" ]; then
+    rm -f "$STATUS_FILE"   # an abandoned unlock (window closed mid-way) left "unlocking"/"pending" behind: not proof of a live owner
+fi
 if [ -f "$STATUS_FILE" ] && [ "$(cat "$STATUS_FILE" 2>/dev/null)" = "unlocking" ]; then
     echo "VAULT: Unlock already in progress, waiting..." >&2
 else
@@ -208,6 +212,8 @@ else
         done
         export DISPLAY="${DISPLAY:-:0}"
         export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+        [ -d "$LOCK" ] && rm -rf "$LOCK"   # under the flock, and the freshness check above passed: stale
+        mkdir "$LOCK" 2>/dev/null && printf '%s' "this desktop" > "$LOCK/desk" && printf 'local' > "$LOCK/card"
         if [ -x /usr/bin/ghostty ]; then
             /usr/bin/ghostty --title="Vault Unlock" -e bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
         elif command -v gnome-terminal >/dev/null 2>&1; then

@@ -43,7 +43,7 @@ def scan(line: str, state: str, lits: list):
     Returns (code, code_nq, state, subs): code keeps double-quoted text (a quoted path can be the command) with
     its separators hidden and single-quoted literals as placeholders; code_nq blanks double-quoted text (for the
     heredoc scan); subs are the $( ) and backtick bodies, which execute and are judged on their own."""
-    out, nq, subs, i, n = [], [], [], 0, len(line)
+    out, nq, subs, heredocs, i, n = [], [], [], [], 0, len(line)
 
     def take_subst(i):
         if line.startswith("$(", i):
@@ -70,8 +70,13 @@ def scan(line: str, state: str, lits: list):
         if state == "n":
             if c == "\\" and i + 1 < n:
                 out.append(line[i:i + 2]); nq.append(line[i:i + 2]); i += 2; continue
-            if c == "'":
-                lits.append(""); ph = f"'\x00{len(lits) - 1}\x00'"; out.append(ph); nq.append(ph); state = "s"; i += 1; continue
+            if line.startswith("<<", i):                       # a heredoc delimiter, read here so quoted "<<EOF" text never counts
+                m = re.match(r"<<-?\s*(?:'([^']+)'|\"([^\"]+)\"|(\w+))", line[i:])
+                if m:
+                    a, b, c2 = m.groups(); heredocs.append((a or b or c2, not (a or b)))
+                    out.append(" "); nq.append(" "); i += m.end(); continue
+            if c == "'" or line.startswith("$'", i):
+                lits.append(""); ph = f"'\x00{len(lits) - 1}\x00'"; out.append(ph); nq.append(ph); state = "s"; i += 2 if c == "$" else 1; continue
             if c == "#" and (i == 0 or line[i - 1] in " \t;&|("):
                 break
             if c == '"':
@@ -87,7 +92,10 @@ def scan(line: str, state: str, lits: list):
         if line.startswith("$(", i) or c == "`":
             i = take_subst(i); out.append("_SUB_"); continue
         out.append(SEPMAP.get(c, c)); i += 1
-    return "".join(out), "".join(nq), state, subs
+    return "".join(out), "".join(nq), state, subs, heredocs
+
+
+RAW_SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")   # inside an unquoted heredoc body quotes do not suppress expansion
 
 
 def unquote(tok: str, lits: list) -> str:
@@ -113,13 +121,15 @@ def head_is_bw(words: list, lits: list) -> bool:
         base = os.path.basename(w)
         if base in WRAPPERS:
             short_ops, long_ops = WRAPPERS[base]
-            if base == "command" and i + 1 < len(words) and words[i + 1] in ("-v", "-V"):
-                return False
             i += 1
             while i < len(words):
                 o = words[i]
                 if o == "--":
                     i += 1; break
+                if base == "command" and (o in ("-v", "-V") or (o.startswith("-") and not o.startswith("--") and ("v" in o or "V" in o))):
+                    return False                                  # a lookup, not a run
+                if base == "env" and (o == "-S" or o == "--split-string") and i + 1 < len(words):
+                    return trips(words[i + 1])                    # env -S 'bw status' runs the string
                 if o.startswith("--"):
                     i += 1 + (1 if o in long_ops else 0); continue
                 if o.startswith("-") and len(o) > 1:
@@ -159,21 +169,21 @@ def split_commands(code: str):
 
 
 def _trips(text: str) -> bool:
-    state, lits, tags, buf, buf_nq = "n", [], [], [], []
-    for line in text.split("\n"):
+    state, lits, tags, buf, pending = "n", [], [], [], []
+    for line in text.replace("\\\n", "").split("\n"):   # bash joins a backslash-newline before anything else
         if tags and state == "n" and not buf:            # inside a heredoc body
             tag, expands = tags[0]
             if line.strip() == tag:
                 tags.pop(0); continue
-            if expands:                                   # an unquoted heredoc runs $( ) in its body
-                for body in scan(line, "n", [])[3]:
-                    if _trips(body):
+            if expands:                                   # an unquoted heredoc runs $( ) in its body, quotes or not
+                for m in RAW_SUBST.finditer(line):
+                    if _trips(m.group(1) or m.group(2) or ""):
                         return True
             continue
         if not line.strip() and state == "n" and not buf:
             continue
-        code, nq, state, subs = scan(line, state, lits)
-        buf.append(code); buf_nq.append(nq)
+        code, nq, state, subs, heredocs = scan(line, state, lits)
+        buf.append(code); pending.extend(heredocs)
         for body in subs:
             if _trips(body):
                 return True
@@ -181,11 +191,11 @@ def _trips(text: str) -> bool:
             lits[-1] += "\n"; continue                    # the literal goes on next line
         if state == "d":
             continue                                      # the quoted word goes on next line
-        logical, logical_nq, buf, buf_nq = "\n".join(buf), "\n".join(buf_nq), [], []
+        logical, buf = "\n".join(buf), []
         for words in split_commands(logical):
             if head_is_bw(words, lits):
                 return True
-        tags.extend((unquote(a or b or c, lits), not (a or b)) for a, b, c in HEREDOC.findall(logical_nq))
+        tags.extend(pending); pending = []
     if state != "n":
         raise ValueError("unbalanced quote")
     return False

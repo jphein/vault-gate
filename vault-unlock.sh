@@ -31,15 +31,16 @@ SESSION_FILE="$RUNTIME_DIR/bw-session-token"
 
 token_write() {
     local token="$1"
-    exec 8>"$RUNTIME_DIR/vault-gate.lockfile"; flock -w 5 8 || true   # the hook's token_clear takes the same lock
+    exec 8>"$RUNTIME_DIR/vault-gate.tokenlock"   # the hook's token_clear takes the same lock, for well under a second
+    flock -w 30 8 || flock -w 30 8 || echo "WARNING: token lock busy for 60 s; publishing anyway so the typed password is not wasted" >&2
     if [ "$STORAGE" = "keyring" ]; then
         printf '%s\n' "$token" | secret-tool store \
             --label="Bitwarden session (vault-gate)" \
             service vault-gate \
-            account bw-session 2>/dev/null
+            account bw-session 2>/dev/null || true   # a store failure must reach the file fallback, not abort under set -e
         local readback
         readback=$(secret-tool lookup service vault-gate account bw-session 2>/dev/null || true)
-        if [ -z "$readback" ]; then
+        if [ "$readback" != "$token" ]; then        # equality, not mere presence: a previous token is not this one
             echo -e "  ${YELLOW}Keyring write failed — falling back to file storage${RESET}" >&2
             printf '%s' "$token" > "$SESSION_FILE"
             chmod 600 "$SESSION_FILE"

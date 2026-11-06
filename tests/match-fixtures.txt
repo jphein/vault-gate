@@ -78,3 +78,12 @@ pass|echo "a; bw status"
 pass|cat <<'EOF'<NL>$(bw status)<NL>EOF
 trip|x="multi<NL>line"; bw status
 pass|case bw in *) echo no;; esac
+# xreview pass 3 shapes
+trip|env -S 'bw status'
+trip|$'bw' status
+trip|b\<NL>w status
+trip|cat <<EOF<NL>'$(bw status)'<NL>EOF
+pass|cat <<"EOF"<NL>bw status<NL>EOF
+pass|command -p -v bw
+pass|echo "<<EOF"<NL>echo still text
+trip|echo "<<EOF"<NL>bw status
