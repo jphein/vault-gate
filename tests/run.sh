@@ -6,7 +6,7 @@ set -uo pipefail
 R="$(cd "$(dirname "$0")/.." && pwd)"; fails=0
 bad() { echo "FAIL: $*"; fails=$((fails+1)); }; ok() { echo "ok:   $*"; }
 python3 -I "$R/vault-gate-match.py" --test "$R/tests/match-fixtures.txt" | tail -1 | grep -q '^0 failure' && ok "matcher fixtures" || bad "matcher fixtures"
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; mkdir -p "$T/bin" "$T/run"
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; mkdir -p "$T/bin" "$T/run"; chmod 700 "$T/run"
 cat > "$T/bin/loginctl" <<'S'
 #!/bin/sh
 case "$1" in list-sessions) printf '1 1000 jp - 2439  manager - no -\n4 1000 jp - 7983  user    - no -\n';;
@@ -28,10 +28,13 @@ chmod +x "$T/bin"/*
 run() { PATH="$T/bin:$PATH" XDG_RUNTIME_DIR="$T/run" HOME="$T" VAULT_GATE_BW="$T/bin/bw" VAULT_GATE_SSH="$T/bin/ssh" VAULT_GATE_MAX_WAIT=2 REMOTE_DESKTOPS="ghost katana wakizashi" "$@" bash "$R/vault-gate.sh" 2>&1; }
 out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
 grep -q "DRY-RUN: would open on wakizashi: systemd-run --user --collect --quiet /usr/bin/ghostty --title='Vault Unlock ($(hostname))' -e ssh -t $(hostname) tmux attach -t vault-unlock" <<<"$out" && [ $rc -eq 0 ] && ok "headless dry run picks the least idle desktop and would open ghostty via systemd-run" || bad "headless dry run: rc=$rc out=$out"
-printf 'wakizashi %s\n' "$(date +%s)" > "$T/run/vault-gate.remote-open"; printf 'abc123def456' > "$T/run/vault-gate.card"
+mkdir -p "$T/run/vault-gate.remote-open"; printf 'wakizashi' > "$T/run/vault-gate.remote-open/desk"; printf 'abc123def456' > "$T/run/vault-gate.remote-open/card"
 out=$(run env); rc=$?
 grep -q "BLOCKED: unlock pending, card abc123def456: a Vault Unlock window is open on wakizashi" <<<"$out" && [ $rc -eq 2 ] && ok "a fresh lock refuses at once with the card id (exit 2)" || bad "fresh lock: rc=$rc out=$out"
 touch -d '-11 minutes' "$T/run/vault-gate.remote-open"
 out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
 grep -q "DRY-RUN: would open on wakizashi" <<<"$out" && [ $rc -eq 0 ] && ok "a stale lock (11 min) opens again" || bad "stale lock: rc=$rc out=$out"
+chmod 755 "$T/run"; out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
+grep -q "BLOCKED: .* not a private (0700, mine) runtime dir" <<<"$out" && [ $rc -eq 2 ] && ok "a runtime dir that is not 0700 is refused" || bad "runtime dir check: rc=$rc out=$out"
+chmod 700 "$T/run"
 echo "$fails failure(s)"; [ "$fails" -eq 0 ]

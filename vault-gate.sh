@@ -15,6 +15,11 @@ export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user
 
 # User-private tmpfs (mode 700, cleaned on logout, not written to disk)
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+umask 077   # every state file here (lock, card, log, token fallback) is private
+if [ "$(stat -c %u "$RUNTIME_DIR" 2>/dev/null)" != "$(id -u)" ] || [ "$(stat -c %a "$RUNTIME_DIR" 2>/dev/null)" != 700 ]; then
+    echo "BLOCKED: $RUNTIME_DIR is not a private (0700, mine) runtime dir; refusing to keep vault state there." >&2
+    exit 2
+fi
 STATUS_FILE="$RUNTIME_DIR/bw-unlock-status"
 LOG="$RUNTIME_DIR/vault-gate.log"
 
@@ -54,7 +59,10 @@ token_read() {
     fi
 }
 
-token_clear() {
+token_clear() {   # clear ONLY the value we just found stale: another caller may have published a fresh one meanwhile
+    local stale="$1" now
+    now=$(token_read)
+    [ "$now" = "$stale" ] || return 0
     if [ "$STORAGE" = "keyring" ]; then
         secret-tool clear service vault-gate account bw-session 2>/dev/null || true
     fi
@@ -72,7 +80,7 @@ if [ -n "$TOKEN" ]; then
         exit 0
     fi
     # Stale token — clear it
-    token_clear
+    token_clear "$TOKEN"
     echo "VAULT: Cached token expired, need fresh unlock." >&2
 fi
 
@@ -91,9 +99,9 @@ fi
 echo "VAULT: Vault is locked. Opening unlock window..." >&2
 
 # A headless host's earlier caller opened a window on a desktop within LOCK_TTL: refuse at once, don't wait MAX_WAIT.
-LOCK="$RUNTIME_DIR/vault-gate.remote-open"; CARD="$RUNTIME_DIR/vault-gate.card"; LOCK_TTL="${LOCK_TTL:-600}"
-if [ -f "$LOCK" ] && [ $(( $(date +%s) - $(stat -c %Y "$LOCK") )) -lt "$LOCK_TTL" ]; then
-    echo "BLOCKED: unlock pending, card $(cat "$CARD" 2>/dev/null || echo unfiled): a Vault Unlock window is open on $(cut -d' ' -f1 "$LOCK") since $(date -d "@$(stat -c %Y "$LOCK")" +%H:%M). Retry after JP unlocks (tmux 'vault-unlock' on $(hostname))." >&2
+LOCK="$RUNTIME_DIR/vault-gate.remote-open"; LOCK_TTL="${LOCK_TTL:-600}"   # a directory: mkdir is the atomic acquire
+if [ -d "$LOCK" ] && [ $(( $(date +%s) - $(stat -c %Y "$LOCK") )) -lt "$LOCK_TTL" ]; then
+    echo "BLOCKED: unlock pending, card $(cat "$LOCK/card" 2>/dev/null || echo unfiled): a Vault Unlock window is open on $(cat "$LOCK/desk" 2>/dev/null || echo '?') since $(date -d "@$(stat -c %Y "$LOCK")" +%H:%M). Retry after JP unlocks (tmux 'vault-unlock' on $(hostname))." >&2
     exit 2
 fi
 
@@ -134,19 +142,27 @@ else
             done
             [ -n "$best" ] && echo "$best"
         }
+        # Acquire the launch lock first (atomic mkdir); a stale one is cleared. Only the holder probes and launches.
+        [ -d "$LOCK" ] && rm -rf "$LOCK"
+        if ! mkdir "$LOCK" 2>/dev/null; then
+            echo "BLOCKED: unlock pending (another caller is opening the window). Retry in a minute." >&2
+            exit 2
+        fi
         desk=$(pick_desktop)
         if [ -z "$desk" ]; then
+            rmdir "$LOCK" 2>/dev/null
             echo "BLOCKED: Vault is locked and no desktop (${REMOTE_DESKTOP:-${REMOTE_DESKTOPS:-katana wakizashi}}) answers. Unlock from a terminal: ssh -t $(hostname) bw unlock" >&2
             exit 2
         fi
         if command -v tmux >/dev/null 2>&1; then
             remote_cmd="ssh -t $(hostname) tmux attach -t vault-unlock"
         else
-            remote_cmd="ssh -t $(hostname) bash $HOME/.claude/scripts/vault-unlock-inline.sh"
+            remote_cmd="ssh -t $(printf %q "$(hostname)") bash $(printf %q "$HOME/.claude/scripts/vault-unlock-inline.sh")"
         fi
         open_cmd="systemd-run --user --collect --quiet /usr/bin/ghostty --title='Vault Unlock ($(hostname))' -e $remote_cmd"
         if [ -n "${VAULT_GATE_DRY_RUN:-}" ]; then
             echo "DRY-RUN: would open on $desk: $open_cmd" >&2
+            rmdir "$LOCK" 2>/dev/null
             exit 0
         fi
         if command -v tmux >/dev/null 2>&1; then
@@ -154,10 +170,11 @@ else
             tmux new-session -d -s vault-unlock "bash '$UNLOCK_SCRIPT'"
         fi
         if ! "$SSH" -o BatchMode=yes -o ConnectTimeout=6 "$desk" "$open_cmd" >/dev/null 2>&1; then
+            rm -rf "$LOCK"
             echo "BLOCKED: could not open the unlock window on $desk. Unlock from a terminal: ssh -t $(hostname) tmux attach -t vault-unlock" >&2
             exit 2
         fi
-        printf '%s %s\n' "$desk" "$(date +%s)" > "$LOCK"
+        printf '%s' "$desk" > "$LOCK/desk"; touch "$LOCK"
         card=unfiled
         if command -v ask >/dev/null 2>&1; then
             out=$(ask add --key vault:unlock --title "Unlock the password vault on $(hostname)" \
@@ -167,7 +184,7 @@ else
                 --close "file:$SESSION_FILE" 2>&1) && card=$(grep -oE '\b[0-9a-f]{12}\b' <<<"$out" | head -1)
             [ -n "$card" ] || card=unfiled
         fi
-        printf '%s' "$card" > "$CARD"
+        printf '%s' "$card" > "$LOCK/card"
         { echo "[$(date -Iseconds)] headless: window on $desk, card $card"; } >> "$LOG" 2>/dev/null || true
         echo "VAULT: Unlock window opened on $desk (tmux 'vault-unlock' on $(hostname)); card $card. Enter the master password there." >&2
     else
@@ -211,7 +228,7 @@ while [ $WAITED -lt $MAX_WAIT ]; do
             echo "VAULT: Unlocked successfully. Proceeding." >&2
             exit 0
         fi
-        token_clear  # Bad token, keep waiting
+        token_clear "$TOKEN"  # Bad token, keep waiting
     fi
 
     if [ -f "$STATUS_FILE" ]; then

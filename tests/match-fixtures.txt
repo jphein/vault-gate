@@ -47,3 +47,18 @@ pass|curl https://example.com/bw status
 pass|printf '%s\n' "bw get password x" > notes.md
 pass|echo "the bw wrapper" && ls
 pass|tmux send-keys -t s 'bw unlock' Enter
+# xreview 2026-11-06 (gpt-6.1-sol) regression shapes
+trip|if bw status; then :; fi
+trip|sudo -u root bw status
+trip|bash -lc 'bw status'
+trip|> /tmp/bw-output bw status
+trip|2>/dev/null bw status
+trip|while ! bw status; do sleep 1; done
+trip|{ bw sync; }
+trip|echo "x: $(bw get password y)" > out
+pass|printf '%s\n' '$(bw status)'
+pass|# $(bw status)
+trip|printf '%s\n' '<<EOF'<NL>bw status<NL>EOF
+pass|command -v bw
+pass|echo '$(bw get password x)'
+trip|printf '%s' '<<EOF'; bw status
