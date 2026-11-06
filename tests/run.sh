@@ -34,6 +34,11 @@ grep -q "BLOCKED: unlock pending, card abc123def456: a Vault Unlock window is op
 touch -d '-11 minutes' "$T/run/vault-gate.remote-open"
 out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
 grep -q "DRY-RUN: would open on wakizashi" <<<"$out" && [ $rc -eq 0 ] && ok "a stale lock (11 min) opens again" || bad "stale lock: rc=$rc out=$out"
+rm -rf "$T/run/vault-gate.remote-open"
+( run env >"$T/a.out" 2>&1 & run env >"$T/b.out" 2>&1 & wait )
+opened=$(cat "$T/a.out" "$T/b.out" | grep -c "VAULT: Unlock window opened on"); refused=$(cat "$T/a.out" "$T/b.out" | grep -c "BLOCKED: unlock pending")
+[ "$opened" = 1 ] && [ "$refused" = 1 ] && ok "two concurrent callers: exactly one opens, one is refused (flock)" || bad "concurrency: opened=$opened refused=$refused: $(cat "$T/a.out" "$T/b.out" | tr '\n' ' ' | cut -c1-300)"
+[ "$(cat "$T/run/vault-gate.remote-open/card")" = abc123def456 ] && ok "the card id is stored in the lock dir" || bad "card not stored"
 chmod 755 "$T/run"; out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
 grep -q "BLOCKED: .* not a private (0700, mine) runtime dir" <<<"$out" && [ $rc -eq 2 ] && ok "a runtime dir that is not 0700 is refused" || bad "runtime dir check: rc=$rc out=$out"
 chmod 700 "$T/run"

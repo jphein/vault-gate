@@ -62,3 +62,19 @@ trip|printf '%s\n' '<<EOF'<NL>bw status<NL>EOF
 pass|command -v bw
 pass|echo '$(bw get password x)'
 trip|printf '%s' '<<EOF'; bw status
+# xreview pass 2 shapes
+trip|sudo --user root bw status
+trip|command -- bw status
+trip|timeout -k 1 10 bw status
+trip|cat <<EOF<NL>$(bw status)<NL>EOF
+trip|printf '%s\n' "<<EOF"<NL>bw status<NL>EOF
+pass|printf '%s\n' ";" bw
+pass|for bw in a; do :; done
+pass|printf '%s\n' 'literal<NL>$(bw status)<NL>'
+trip|echo __SQ0__; bw status
+trip|cat <<EOF<NL>it's<NL>EOF<NL>bw status
+trip|echo "a;b" ; bw status
+pass|echo "a; bw status"
+pass|cat <<'EOF'<NL>$(bw status)<NL>EOF
+trip|x="multi<NL>line"; bw status
+pass|case bw in *) echo no;; esac

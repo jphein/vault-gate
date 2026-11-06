@@ -44,6 +44,7 @@ if [ "$STORAGE" = "keyring" ] && ! command -v secret-tool >/dev/null 2>&1; then
 fi
 
 SESSION_FILE="$RUNTIME_DIR/bw-session-token"
+LOCKFILE="$RUNTIME_DIR/vault-gate.lockfile"   # one flock serialises: token clear vs publish, and the whole launch decision
 
 # --- Storage helpers ---
 
@@ -59,14 +60,16 @@ token_read() {
     fi
 }
 
-token_clear() {   # clear ONLY the value we just found stale: another caller may have published a fresh one meanwhile
-    local stale="$1" now
-    now=$(token_read)
-    [ "$now" = "$stale" ] || return 0
-    if [ "$STORAGE" = "keyring" ]; then
-        secret-tool clear service vault-gate account bw-session 2>/dev/null || true
-    fi
-    rm -f "$SESSION_FILE"
+token_clear() {   # clear ONLY the value we found stale, under the lock the publisher (vault-unlock.sh) also takes
+    local stale="$1"
+    (
+        flock -w 5 8 || exit 0
+        [ "$(token_read)" = "$stale" ] || exit 0
+        if [ "$STORAGE" = "keyring" ]; then
+            secret-tool clear service vault-gate account bw-session 2>/dev/null || true
+        fi
+        rm -f "$SESSION_FILE"
+    ) 8>"$LOCKFILE"
 }
 
 # --- Check if vault is already unlocked ---
@@ -98,6 +101,13 @@ fi
 
 echo "VAULT: Vault is locked. Opening unlock window..." >&2
 
+# The launch decision (inspect the lock, reclaim a stale one, probe, launch) runs under one flock: two callers can
+# never both launch, and a fresh lock can never be reclaimed by a late caller. Released before the wait below.
+exec 9>"$LOCKFILE"
+if ! flock -w 20 9; then
+    echo "BLOCKED: another caller is opening the unlock window; retry in a minute." >&2
+    exit 2
+fi
 # A headless host's earlier caller opened a window on a desktop within LOCK_TTL: refuse at once, don't wait MAX_WAIT.
 LOCK="$RUNTIME_DIR/vault-gate.remote-open"; LOCK_TTL="${LOCK_TTL:-600}"   # a directory: mkdir is the atomic acquire
 if [ -d "$LOCK" ] && [ $(( $(date +%s) - $(stat -c %Y "$LOCK") )) -lt "$LOCK_TTL" ]; then
@@ -142,12 +152,9 @@ else
             done
             [ -n "$best" ] && echo "$best"
         }
-        # Acquire the launch lock first (atomic mkdir); a stale one is cleared. Only the holder probes and launches.
+        # Under the flock: the freshness check above already passed, so any lock dir here is stale.
         [ -d "$LOCK" ] && rm -rf "$LOCK"
-        if ! mkdir "$LOCK" 2>/dev/null; then
-            echo "BLOCKED: unlock pending (another caller is opening the window). Retry in a minute." >&2
-            exit 2
-        fi
+        mkdir "$LOCK" 2>/dev/null || { echo "BLOCKED: cannot create $LOCK" >&2; exit 2; }
         desk=$(pick_desktop)
         if [ -z "$desk" ]; then
             rmdir "$LOCK" 2>/dev/null
@@ -213,6 +220,8 @@ else
         disown
     fi
 fi
+
+flock -u 9 2>/dev/null || true   # launch done; other callers may now inspect the lock
 
 # --- Wait for unlock to complete ---
 

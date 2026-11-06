@@ -31,6 +31,7 @@ SESSION_FILE="$RUNTIME_DIR/bw-session-token"
 
 token_write() {
     local token="$1"
+    exec 8>"$RUNTIME_DIR/vault-gate.lockfile"; flock -w 5 8 || true   # the hook's token_clear takes the same lock
     if [ "$STORAGE" = "keyring" ]; then
         printf '%s\n' "$token" | secret-tool store \
             --label="Bitwarden session (vault-gate)" \
@@ -47,6 +48,7 @@ token_write() {
         printf '%s' "$token" > "$SESSION_FILE"
         chmod 600 "$SESSION_FILE"
     fi
+    flock -u 8 2>/dev/null || true
 }
 
 rm -f "$STATUS_FILE" "$OUTPUT_FILE"
