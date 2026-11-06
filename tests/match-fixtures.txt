@@ -1,0 +1,102 @@
+# want|command   (<NL> = newline). trip = the hook must gate it; pass = it must not.
+trip|bw status
+trip|bw get password 'some item' | head -c 4
+trip|TOKEN=$(bw get password x)
+trip|X="$(bw get item 1234)"
+trip|echo "token: $(bw get password x)"
+trip|out=`bw list items`
+trip|sudo bw login
+trip|exec bw unlock
+trip|cd ~ && bw sync
+trip|ls; bw list items --search x
+trip|true || bw status
+trip|env FOO=1 bw status
+trip|BW_SESSION=abc bw status
+trip|timeout 10 bw status
+trip|~/.npm-global/bin/bw status
+trip|"$HOME/.npm-global/bin/bw" status
+trip|/home/jp/.local/bin/bw get item x
+trip|bash -c 'bw get password x'
+trip|sh -c "bw status"
+trip|eval "bw status"
+trip|echo hi<NL>bw status
+trip|(bw status)
+trip|cat x | bw encode
+trip|nohup bw sync &
+trip|bw get item x | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])'
+pass|echo "bw status"
+pass|echo 'run bw unlock first'
+pass|grep -n 'bw ' file.txt
+pass|grep -rn "bw get" ~/Projects/vault-gate
+pass|cat <<'EOF'<NL>bw get password foo<NL>EOF
+pass|cat <<EOF > x<NL>run: bw status<NL>EOF
+pass|git commit -m "bw: fix the matcher"
+pass|git commit -q -F - <<'MSG'<NL>fix: bw status in the hook<NL>MSG
+pass|python3 -c "print('bw status')"
+pass|echo bw
+pass|ls bw/
+pass|nbw status
+pass|bwctl status
+pass|# bw status
+pass|ls   # then bw status
+pass|awk '{print "bw " $1}' f
+pass|sed -i 's/bw /x /' f
+pass|ssh familiar 'bw status'
+pass|ssh -t familiar bw unlock
+pass|curl https://example.com/bw status
+pass|printf '%s\n' "bw get password x" > notes.md
+pass|echo "the bw wrapper" && ls
+pass|tmux send-keys -t s 'bw unlock' Enter
+# xreview 2026-11-06 (gpt-6.1-sol) regression shapes
+trip|if bw status; then :; fi
+trip|sudo -u root bw status
+trip|bash -lc 'bw status'
+trip|> /tmp/bw-output bw status
+trip|2>/dev/null bw status
+trip|while ! bw status; do sleep 1; done
+trip|{ bw sync; }
+trip|echo "x: $(bw get password y)" > out
+pass|printf '%s\n' '$(bw status)'
+pass|# $(bw status)
+trip|printf '%s\n' '<<EOF'<NL>bw status<NL>EOF
+pass|command -v bw
+pass|echo '$(bw get password x)'
+trip|printf '%s' '<<EOF'; bw status
+# xreview pass 2 shapes
+trip|sudo --user root bw status
+trip|command -- bw status
+trip|timeout -k 1 10 bw status
+trip|cat <<EOF<NL>$(bw status)<NL>EOF
+trip|printf '%s\n' "<<EOF"<NL>bw status<NL>EOF
+pass|printf '%s\n' ";" bw
+pass|for bw in a; do :; done
+pass|printf '%s\n' 'literal<NL>$(bw status)<NL>'
+trip|echo __SQ0__; bw status
+trip|cat <<EOF<NL>it's<NL>EOF<NL>bw status
+trip|echo "a;b" ; bw status
+pass|echo "a; bw status"
+pass|cat <<'EOF'<NL>$(bw status)<NL>EOF
+trip|x="multi<NL>line"; bw status
+pass|case bw in *) echo no;; esac
+# xreview pass 3 shapes
+trip|env -S 'bw status'
+trip|$'bw' status
+trip|b\<NL>w status
+trip|cat <<EOF<NL>'$(bw status)'<NL>EOF
+pass|cat <<"EOF"<NL>bw status<NL>EOF
+pass|command -p -v bw
+pass|echo "<<EOF"<NL>echo still text
+trip|echo "<<EOF"<NL>bw status
+# xreview pass 4 shapes
+trip|BW="$HOME/.npm-global/bin/bw"; "$BW" status
+trip|BW=~/.npm-global/bin/bw<NL>$BW get password x
+trip|cat <<<"text"<NL>bw status
+trip|env --split-string='bw status'
+pass|cat <<EOF<NL>  EOF<NL>bw status<NL>EOF
+trip|cat <<-EOF<NL>	EOF<NL>bw status
+pass|X=bw; echo "$X"
+# the hook's own false trip of 2026-11-06 13:0x: a quoted heredoc inside a multi-line $( ) PR body with `bw ` in markdown backticks
+pass|gh pr create --title "x" --body "$(cat <<'EOF'<NL>The hook grepped for `bw ` anywhere.<NL>Now `bw status` only at a command position.<NL>EOF<NL>)" 2>&1 | tail -1
+trip|gh pr create --body "$(cat <<'EOF'<NL>text<NL>EOF<NL>)"; bw status
+trip|X="$(cat <<EOF<NL>$(bw get password y)<NL>EOF<NL>)"
+pass|git commit -q -F - <<'EOF'<NL>fix: `bw status` in docs<NL><NL>Co-Authored-By: x<NL>EOF

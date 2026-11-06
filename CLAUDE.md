@@ -10,7 +10,7 @@ A Claude Code hook that auto-unlocks your Vaultwarden vault when a `bw` command 
 
 - **Claude Code hook format is stdin-JSON (not env vars).** Migrating from old `$CLAUDE_TOOL_INPUT` to `jq -r '.tool_input.command'` is a known pain point. Don't revert to env vars.
 - **Display env is not inherited.** When spawning Ghostty from a hook, import `DISPLAY`/`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS` from the running Ghostty PID. Without this, the unlock window silently fails.
-- **Absolute paths everywhere.** Hook shells may not inherit `~/.npm-global/bin` or `/snap/bin`. Use `$HOME/.npm-global/bin/bw` and `/snap/bin/ghostty`.
+- **Absolute paths everywhere.** Hook shells may not inherit `~/.npm-global/bin`. Use `$HOME/.npm-global/bin/bw` and `/usr/bin/ghostty` (native apt ghostty since 2026-08-26; the snap and the wsh/WaveTerm launcher branch are gone).
 - **Don't redirect `bw unlock --raw > file`.** Swallows the password prompt. Use `bw unlock` with `tee` to capture output while keeping the PTY.
 - **Idempotency matters.** `install.sh` and `uninstall.sh` must be safe to re-run.
 - **Hooks can't mutate the next process's env.** PreToolUse hooks gate (exit 0 / 2) but cannot inject `BW_SESSION` into the subsequent `bw` call. That's why `bw-wrapper.sh` exists: a `~/.local/bin/bw` PATH shim that reads the cached token and exports `BW_SESSION` before exec'ing the real bw. Don't try to "fix" this by writing exports into `.bashrc` — Claude Code's Bash tool runs non-interactive non-login shells and won't source it.
@@ -34,3 +34,6 @@ tail "$XDG_RUNTIME_DIR/vault-gate.log"  # verify hook fired
 - Don't write the master password to stdin or any file.
 - Don't delete the session token (GNOME Keyring entry or `$XDG_RUNTIME_DIR/bw-session-token`) unless you also re-unlock; the hook's caching logic assumes the stored token is authoritative while present.
 - **Storage config** lives at `~/.config/vault-gate/config`. `STORAGE=keyring` (default) uses GNOME Keyring via `secret-tool`; `STORAGE=file` uses `$XDG_RUNTIME_DIR` (mode 700 tmpfs).
+- **Headless means "no seat0 graphical session" (loginctl), never "no gnome-shell"**: familiar's lane compositor is a headless gnome-shell. Test the headless path with `tests/run.sh` (stubs) and `VAULT_GATE_DRY_RUN=1`; never open a real window from a test.
+- **The hook matcher is `vault-gate-match.py`**, not a grep; add a fixture for every new tripping/non-tripping shape before changing it.
+

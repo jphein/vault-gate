@@ -7,9 +7,9 @@
 set -euo pipefail
 
 # Force DBUS to the host session bus so secret-tool reaches GNOME Keyring.
-# Snap Ghostty sets its own DBUS_SESSION_BUS_ADDRESS pointing to a confined
-# bus where secret-tool silently fails to write to the host keyring —
-# override unconditionally.
+# (Originally a snap-Ghostty confinement workaround; kept because it is a
+# harmless no-op natively and protects against any launcher that hands us a
+# nonstandard bus address.)
 export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
 
 BW="$HOME/.npm-global/bin/bw"
@@ -31,14 +31,17 @@ SESSION_FILE="$RUNTIME_DIR/bw-session-token"
 
 token_write() {
     local token="$1"
+    exec 8>"$RUNTIME_DIR/vault-gate.tokenlock"   # the hook's token_clear takes the same lock, for well under a second
+    flock -w 30 8 || flock -w 30 8 || echo "WARNING: token lock busy for 60 s; publishing anyway so the typed password is not wasted" >&2
     if [ "$STORAGE" = "keyring" ]; then
         printf '%s\n' "$token" | secret-tool store \
             --label="Bitwarden session (vault-gate)" \
             service vault-gate \
-            account bw-session 2>/dev/null
+            account bw-session 2>/dev/null || true   # a store failure must reach the file fallback, not abort under set -e
         local readback
         readback=$(secret-tool lookup service vault-gate account bw-session 2>/dev/null || true)
-        if [ -z "$readback" ]; then
+        if [ "$readback" != "$token" ]; then        # equality, not mere presence: a previous token is not this one
+            secret-tool clear service vault-gate account bw-session 2>/dev/null || true   # never leave a stale entry the hook would prefer over the file
             echo -e "  ${YELLOW}Keyring write failed — falling back to file storage${RESET}" >&2
             printf '%s' "$token" > "$SESSION_FILE"
             chmod 600 "$SESSION_FILE"
@@ -47,6 +50,7 @@ token_write() {
         printf '%s' "$token" > "$SESSION_FILE"
         chmod 600 "$SESSION_FILE"
     fi
+    flock -u 8 2>/dev/null || true
 }
 
 rm -f "$STATUS_FILE" "$OUTPUT_FILE"
