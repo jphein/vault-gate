@@ -61,7 +61,7 @@ fi
 
 # 2. Symlink scripts
 mkdir -p "$CLAUDE_SCRIPTS"
-for script in vault-gate.sh vault-unlock.sh; do
+for script in vault-gate.sh vault-unlock.sh vault-unlock-inline.sh vault-gate-match.py; do
     target="$CLAUDE_SCRIPTS/$script"
     src="$REPO_ROOT/$script"
     # Replace existing symlink / file so updates propagate
@@ -106,12 +106,18 @@ for rcfile in "$HOME/.bashrc" "$HOME/.profile"; do
     fi
 done
 
-# 5. Register PreToolUse-Bash hook in settings.local.json (idempotent)
-if [ ! -f "$SETTINGS" ]; then
+# 5. Register PreToolUse-Bash hook in settings.local.json (idempotent).
+# VAULT_GATE_NO_HOOK=1 skips this: JP's fleet carries the hook in the synced global ~/.claude/settings.json
+# (claude-config repo), and a second copy here would fire twice.
+if [ -n "${VAULT_GATE_NO_HOOK:-}" ]; then
+    echo "  hook registration skipped (VAULT_GATE_NO_HOOK); the global settings.json carries it"
+    SETTINGS=/dev/null
+fi
+if [ "$SETTINGS" != /dev/null ] && [ ! -f "$SETTINGS" ]; then
     echo '{}' > "$SETTINGS"
 fi
 
-python3 - <<PYEOF
+[ "$SETTINGS" = /dev/null ] || python3 - <<PYEOF
 import json, sys
 
 p = "$SETTINGS"
@@ -120,10 +126,11 @@ with open(p) as f:
 
 s.setdefault("hooks", {}).setdefault("PreToolUse", [])
 
-# Current stdin-JSON format: parse command with jq, then grep for bw
+# stdin-JSON hook: jq extracts the command; vault-gate-match.py decides whether it RUNS bw (a command position,
+# never text in quotes/heredocs/comments); only then the gate runs.
 hook_cmd = (
     "TOOL_INPUT=\"\$(jq -r '.tool_input.command // \"\"' 2>/dev/null || echo '')\"; "
-    "if echo \"\$TOOL_INPUT\" | grep -qP '(?<![/\\\\w.-])bw\\\\s|[\"\\\\x27]bw\\\\s'; then "
+    "if printf '%s' \"\$TOOL_INPUT\" | python3 -I \"\$HOME/.claude/scripts/vault-gate-match.py\"; then "
     "bash \"\$HOME/.claude/scripts/vault-gate.sh\"; fi"
 )
 

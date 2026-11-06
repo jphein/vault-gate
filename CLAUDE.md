@@ -34,3 +34,6 @@ tail "$XDG_RUNTIME_DIR/vault-gate.log"  # verify hook fired
 - Don't write the master password to stdin or any file.
 - Don't delete the session token (GNOME Keyring entry or `$XDG_RUNTIME_DIR/bw-session-token`) unless you also re-unlock; the hook's caching logic assumes the stored token is authoritative while present.
 - **Storage config** lives at `~/.config/vault-gate/config`. `STORAGE=keyring` (default) uses GNOME Keyring via `secret-tool`; `STORAGE=file` uses `$XDG_RUNTIME_DIR` (mode 700 tmpfs).
+- **Headless means "no seat0 graphical session" (loginctl), never "no gnome-shell"**: familiar's lane compositor is a headless gnome-shell. Test the headless path with `tests/run.sh` (stubs) and `VAULT_GATE_DRY_RUN=1`; never open a real window from a test.
+- **The hook matcher is `vault-gate-match.py`**, not a grep; add a fixture for every new tripping/non-tripping shape before changing it.
+

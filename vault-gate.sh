@@ -5,10 +5,10 @@
 # Exit 0 = allow command, Exit 2 = block command.
 # Status messages go to stderr so Claude Code sees them.
 
-BW="$HOME/.npm-global/bin/bw"
+BW="${VAULT_GATE_BW:-$HOME/.npm-global/bin/bw}"   # VAULT_GATE_BW: a stub for tests
 UNLOCK_SCRIPT="$HOME/.claude/scripts/vault-unlock.sh"
 POLL_INTERVAL=1
-MAX_WAIT=120  # seconds
+MAX_WAIT="${VAULT_GATE_MAX_WAIT:-120}"  # seconds (tests shorten it)
 
 # D-Bus address needed for secret-tool in shells spawned outside GNOME session
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
@@ -66,7 +66,7 @@ token_clear() {
 TOKEN=$(token_read)
 if [ -n "$TOKEN" ]; then
     STATUS=$(BW_SESSION="$TOKEN" "$BW" status 2>/dev/null \
-        | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','unknown'))" 2>/dev/null \
+        | python3 -I -c "import json,sys; print(json.load(sys.stdin).get('status','unknown'))" 2>/dev/null \
         || echo "unknown")
     if [ "$STATUS" = "unlocked" ]; then
         exit 0
@@ -78,7 +78,7 @@ fi
 
 # Check vault status without a session
 STATUS=$("$BW" status 2>/dev/null \
-    | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','unknown'))" 2>/dev/null \
+    | python3 -I -c "import json,sys; print(json.load(sys.stdin).get('status','unknown'))" 2>/dev/null \
     || echo "unknown")
 
 if [ "$STATUS" = "unauthenticated" ]; then
@@ -90,6 +90,13 @@ fi
 
 echo "VAULT: Vault is locked. Opening unlock window..." >&2
 
+# A headless host's earlier caller opened a window on a desktop within LOCK_TTL: refuse at once, don't wait MAX_WAIT.
+LOCK="$RUNTIME_DIR/vault-gate.remote-open"; CARD="$RUNTIME_DIR/vault-gate.card"; LOCK_TTL="${LOCK_TTL:-600}"
+if [ -f "$LOCK" ] && [ $(( $(date +%s) - $(stat -c %Y "$LOCK") )) -lt "$LOCK_TTL" ]; then
+    echo "BLOCKED: unlock pending, card $(cat "$CARD" 2>/dev/null || echo unfiled): a Vault Unlock window is open on $(cut -d' ' -f1 "$LOCK") since $(date -d "@$(stat -c %Y "$LOCK")" +%H:%M). Retry after JP unlocks (tmux 'vault-unlock' on $(hostname))." >&2
+    exit 2
+fi
+
 if [ -f "$STATUS_FILE" ] && [ "$(cat "$STATUS_FILE" 2>/dev/null)" = "unlocking" ]; then
     echo "VAULT: Unlock already in progress, waiting..." >&2
 else
@@ -99,37 +106,95 @@ else
         echo "[$(date -Iseconds)] storage=$STORAGE unlock_script=$UNLOCK_SCRIPT"
     } >> "$LOG" 2>/dev/null || true
 
-    # Prefer native Ghostty (/usr/bin/ghostty, GPU-accelerated, host keyring),
-    # then gnome-terminal. The old wsh (WaveTerm) and snap-Ghostty branches are
-    # gone (2026-08-26): waveterm + the ghostty snap were removed in the de-snap
-    # sweep, and the wsh branch failed silently when WaveTerm wasn't running —
-    # no window, session stuck until the hook timeout.
-    # Need DISPLAY env for standalone terminal windows
-    local gui_pid
-    gui_pid=$(pgrep -u "$USER" -x gnome-shell 2>/dev/null | head -1 \
-        || pgrep -u "$USER" -x gnome-session 2>/dev/null | head -1 \
-        || true)
-    if [ -n "$gui_pid" ] && [ -r "/proc/$gui_pid/environ" ]; then
-        while IFS= read -r var; do
-            case "$var" in
-                DISPLAY=*|WAYLAND_DISPLAY=*|XDG_RUNTIME_DIR=*|GDK_BACKEND=*)
-                    export "$var" ;;
-            esac
-        done < <(tr '\0' '\n' < "/proc/$gui_pid/environ")
-    fi
-    export DISPLAY="${DISPLAY:-:0}"
-    export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+    # --- Where can a window appear? ---
+    # A desktop THIS host shows = a seat0 graphical session of this user (loginctl). "Is gnome-shell running" was
+    # the wrong test: familiar runs a HEADLESS gnome-shell (wayland-lane2, for the lane browsers), so the window
+    # opened on a display nobody looks at and every lane waited out MAX_WAIT (2026-11-06, four lanes x 120 s).
+    local_session=""
+    for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+        info=$(loginctl show-session "$s" -p Name -p Seat -p Type -p Active 2>/dev/null)
+        [ "$(sed -n 's/^Name=//p' <<<"$info")" = "$USER" ] || continue
+        [ "$(sed -n 's/^Seat=//p' <<<"$info")" = "seat0" ] || continue
+        [ "$(sed -n 's/^Active=//p' <<<"$info")" = "yes" ] || continue
+        case "$(sed -n 's/^Type=//p' <<<"$info")" in wayland|x11) local_session="$s"; break ;; esac
+    done
 
-    if [ -x /usr/bin/ghostty ]; then
-        /usr/bin/ghostty --title="Vault Unlock" -e bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
-    elif command -v gnome-terminal >/dev/null 2>&1; then
-        gnome-terminal -- bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
+    if [ -z "$local_session" ]; then
+        # Headless: run the unlock here in tmux (vault-unlock.sh: retries, keyring, status file) and open a window
+        # on JP's active desktop that attaches to it over ssh. One window per LOCK_TTL; meanwhile every caller is
+        # refused at once with the card id instead of waiting out MAX_WAIT.
+        SSH="${VAULT_GATE_SSH:-ssh}"
+        pick_desktop() {   # the unlocked desktop with the most recent input; else the first reachable; else none
+            local h best="" best_idle="" out idle locked
+            for h in ${REMOTE_DESKTOP:-${REMOTE_DESKTOPS:-katana wakizashi}}; do
+                out=$("$SSH" -o BatchMode=yes -o ConnectTimeout=4 "$h" 'gdbus call --session --dest org.gnome.Mutter.IdleMonitor --object-path /org/gnome/Mutter/IdleMonitor/Core --method org.gnome.Mutter.IdleMonitor.GetIdletime 2>/dev/null; gdbus call --session --dest org.gnome.ScreenSaver --object-path /org/gnome/ScreenSaver --method org.gnome.ScreenSaver.GetActive 2>/dev/null' 2>/dev/null) || continue
+                idle=$(sed -n 's/.*uint64 \([0-9][0-9]*\).*/\1/p' <<<"$out" | head -1); locked=$(grep -oE '\((true|false),\)' <<<"$out" | grep -oE 'true|false')
+                [ -n "$idle" ] || idle=999999999; [ "$locked" = true ] && idle=$((idle + 1000000000))   # a locked screen loses to any unlocked one
+                if [ -z "$best" ] || [ "$idle" -lt "$best_idle" ]; then best="$h"; best_idle="$idle"; fi
+            done
+            [ -n "$best" ] && echo "$best"
+        }
+        desk=$(pick_desktop)
+        if [ -z "$desk" ]; then
+            echo "BLOCKED: Vault is locked and no desktop (${REMOTE_DESKTOP:-${REMOTE_DESKTOPS:-katana wakizashi}}) answers. Unlock from a terminal: ssh -t $(hostname) bw unlock" >&2
+            exit 2
+        fi
+        if command -v tmux >/dev/null 2>&1; then
+            remote_cmd="ssh -t $(hostname) tmux attach -t vault-unlock"
+        else
+            remote_cmd="ssh -t $(hostname) bash $HOME/.claude/scripts/vault-unlock-inline.sh"
+        fi
+        open_cmd="systemd-run --user --collect --quiet /usr/bin/ghostty --title='Vault Unlock ($(hostname))' -e $remote_cmd"
+        if [ -n "${VAULT_GATE_DRY_RUN:-}" ]; then
+            echo "DRY-RUN: would open on $desk: $open_cmd" >&2
+            exit 0
+        fi
+        if command -v tmux >/dev/null 2>&1; then
+            tmux kill-session -t vault-unlock 2>/dev/null || true
+            tmux new-session -d -s vault-unlock "bash '$UNLOCK_SCRIPT'"
+        fi
+        if ! "$SSH" -o BatchMode=yes -o ConnectTimeout=6 "$desk" "$open_cmd" >/dev/null 2>&1; then
+            echo "BLOCKED: could not open the unlock window on $desk. Unlock from a terminal: ssh -t $(hostname) tmux attach -t vault-unlock" >&2
+            exit 2
+        fi
+        printf '%s %s\n' "$desk" "$(date +%s)" > "$LOCK"
+        card=unfiled
+        if command -v ask >/dev/null 2>&1; then
+            out=$(ask add --key vault:unlock --title "Unlock the password vault on $(hostname)" \
+                --action "do: type your master password in the 'Vault Unlock ($(hostname))' window on $desk" \
+                --minutes 1 --due "$(date +%F)" --lane admin --owner vault-gate \
+                --why "agent jobs on $(hostname) wait for the vault; every retry is refused until it is unlocked" \
+                --close "file:$SESSION_FILE" 2>&1) && card=$(grep -oE '\b[0-9a-f]{12}\b' <<<"$out" | head -1)
+            [ -n "$card" ] || card=unfiled
+        fi
+        printf '%s' "$card" > "$CARD"
+        { echo "[$(date -Iseconds)] headless: window on $desk, card $card"; } >> "$LOG" 2>/dev/null || true
+        echo "VAULT: Unlock window opened on $desk (tmux 'vault-unlock' on $(hostname)); card $card. Enter the master password there." >&2
     else
-        echo "BLOCKED: No terminal (ghostty/gnome-terminal) found." >&2
-        exit 2
+        # A local desktop: import its display env from the seat's gnome-shell (never the --headless one).
+        for gui_pid in $(pgrep -u "$USER" -x gnome-shell 2>/dev/null); do
+            grep -qa -- '--headless' "/proc/$gui_pid/cmdline" 2>/dev/null && continue
+            [ -r "/proc/$gui_pid/environ" ] || continue
+            while IFS= read -r var; do
+                case "$var" in
+                    DISPLAY=*|WAYLAND_DISPLAY=*|XDG_RUNTIME_DIR=*|GDK_BACKEND=*) export "$var" ;;
+                esac
+            done < <(tr '\0' '\n' < "/proc/$gui_pid/environ")
+            break
+        done
+        export DISPLAY="${DISPLAY:-:0}"
+        export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+        if [ -x /usr/bin/ghostty ]; then
+            /usr/bin/ghostty --title="Vault Unlock" -e bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
+        elif command -v gnome-terminal >/dev/null 2>&1; then
+            gnome-terminal -- bash "$UNLOCK_SCRIPT" >/dev/null 2>&1 &
+        else
+            echo "BLOCKED: No terminal (ghostty/gnome-terminal) found." >&2
+            exit 2
+        fi
+        echo "VAULT: Unlock window opened. Enter master password there." >&2
+        disown
     fi
-    echo "VAULT: Unlock window opened. Enter master password there." >&2
-    disown
 fi
 
 # --- Wait for unlock to complete ---
@@ -140,7 +205,7 @@ while [ $WAITED -lt $MAX_WAIT ]; do
     TOKEN=$(token_read)
     if [ -n "$TOKEN" ]; then
         VERIFY=$(BW_SESSION="$TOKEN" "$BW" status 2>/dev/null \
-            | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','unknown'))" 2>/dev/null \
+            | python3 -I -c "import json,sys; print(json.load(sys.stdin).get('status','unknown'))" 2>/dev/null \
             || echo "unknown")
         if [ "$VERIFY" = "unlocked" ]; then
             echo "VAULT: Unlocked successfully. Proceeding." >&2

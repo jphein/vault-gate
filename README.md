@@ -35,6 +35,14 @@ Install `secret-tool` on Ubuntu/Debian:
 sudo apt install libsecret-tools
 ```
 
+## Headless hosts (familiar) and the strict matcher (2026-11-06)
+
+- **Where the window appears.** A host that shows a desktop is one with a seat0 graphical session of this user (`loginctl`), not one with a `gnome-shell` process: familiar runs a *headless* gnome-shell for its lane browsers, and the old test sent the window there, where nobody looks, while every lane waited out the 120 s hook timeout. On a headless host the unlock runs in a tmux session `vault-unlock` (the same `vault-unlock.sh`: retries, keyring, status file), and a Ghostty window attaching to it over ssh is opened on JP's active desktop: the unlocked one with the most recent input among `REMOTE_DESKTOPS` (config, default `katana wakizashi`; `REMOTE_DESKTOP=<host>` pins one), via `ssh <desktop> systemd-run --user --collect /usr/bin/ghostty -e ssh -t <host> tmux attach -t vault-unlock`. Without tmux the window runs `vault-unlock-inline.sh` instead.
+- **One window per 10 min.** `$XDG_RUNTIME_DIR/vault-gate.remote-open` (and `.card`, the JP-queue ask id filed with `ask add --key vault:unlock`, closed by `--close file:<token>` when the token appears) make every further caller fail at once with `BLOCKED: unlock pending, card <id>` instead of waiting. `LOCK_TTL` (seconds) is configurable.
+- **The matcher.** `vault-gate-match.py` gates a command only when `bw` sits at a command position (first word after assignments and wrappers such as sudo/exec/env/timeout; after `; && || | (` or a newline; inside `$( )` or backticks; the `-c` of a shell). Quoted text, heredoc bodies and comments never trip it; a remote `ssh host 'bw …'` does not either; an untokenisable command falls back to the old loose match (fails toward gating). Fixtures: `tests/match-fixtures.txt`.
+- **Tests:** `tests/run.sh` (fixtures + the headless path with stubbed loginctl/bw/ssh/tmux/ask, including the lock refusal and a stale lock). `VAULT_GATE_DRY_RUN=1` prints the desktop and the command instead of opening anything.
+- **Install on JP's fleet:** the hook line lives in the synced global `~/.claude/settings.json` (claude-config), so run `VAULT_GATE_NO_HOOK=1 ./install.sh` there (symlinks only).
+
 ## Why a wrapper is needed
 
 Claude Code's PreToolUse hooks can only allow or block a tool call (exit 0 / exit 2); they cannot mutate the environment of the subsequent process. So when `vault-gate.sh` writes the unlocked `BW_SESSION` into GNOME Keyring (or `$XDG_RUNTIME_DIR`), the next `bw` invocation still has no `BW_SESSION` in its env — it queries the daemon, gets back `locked`, and the cache is effectively useless. The shim at `~/.local/bin/bw` reads the cached token and exports `BW_SESSION` itself before exec'ing the real `bw`, closing the loop. A bash function in `.bashrc` would be cleaner but won't work — Claude Code's Bash tool runs `bash -c '…'` (non-interactive, non-login), which doesn't source `.bashrc` at all.

@@ -1,0 +1,49 @@
+# want|command   (<NL> = newline). trip = the hook must gate it; pass = it must not.
+trip|bw status
+trip|bw get password 'some item' | head -c 4
+trip|TOKEN=$(bw get password x)
+trip|X="$(bw get item 1234)"
+trip|echo "token: $(bw get password x)"
+trip|out=`bw list items`
+trip|sudo bw login
+trip|exec bw unlock
+trip|cd ~ && bw sync
+trip|ls; bw list items --search x
+trip|true || bw status
+trip|env FOO=1 bw status
+trip|BW_SESSION=abc bw status
+trip|timeout 10 bw status
+trip|~/.npm-global/bin/bw status
+trip|"$HOME/.npm-global/bin/bw" status
+trip|/home/jp/.local/bin/bw get item x
+trip|bash -c 'bw get password x'
+trip|sh -c "bw status"
+trip|eval "bw status"
+trip|echo hi<NL>bw status
+trip|(bw status)
+trip|cat x | bw encode
+trip|nohup bw sync &
+trip|bw get item x | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])'
+pass|echo "bw status"
+pass|echo 'run bw unlock first'
+pass|grep -n 'bw ' file.txt
+pass|grep -rn "bw get" ~/Projects/vault-gate
+pass|cat <<'EOF'<NL>bw get password foo<NL>EOF
+pass|cat <<EOF > x<NL>run: bw status<NL>EOF
+pass|git commit -m "bw: fix the matcher"
+pass|git commit -q -F - <<'MSG'<NL>fix: bw status in the hook<NL>MSG
+pass|python3 -c "print('bw status')"
+pass|echo bw
+pass|ls bw/
+pass|nbw status
+pass|bwctl status
+pass|# bw status
+pass|ls   # then bw status
+pass|awk '{print "bw " $1}' f
+pass|sed -i 's/bw /x /' f
+pass|ssh familiar 'bw status'
+pass|ssh -t familiar bw unlock
+pass|curl https://example.com/bw status
+pass|printf '%s\n' "bw get password x" > notes.md
+pass|echo "the bw wrapper" && ls
+pass|tmux send-keys -t s 'bw unlock' Enter
