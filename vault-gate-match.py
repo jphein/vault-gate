@@ -28,7 +28,7 @@ WRAPPERS = {
 SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
 RESERVED = {"if", "then", "else", "elif", "fi", "while", "until", "do", "done", "{", "}", "!", "esac", "coproc"}
 NEVER_A_COMMAND = {"for", "select", "case", "function", "in"}   # the words after these name variables/patterns
-LOOSE = re.compile(r"(?<![/\w.-])bw\s|[\"']bw\s")
+LOOSE = re.compile(r"(?<![/\w.-])bw(?=[\s;)|&]|$)|[\"']bw(?=[\s;)|&]|$)")   # the fail-closed fallback: bw as a word anywhere
 HEREDOC = re.compile(r"<<-?\s*(?:'([^']+)'|\"([^\"]+)\"|(\w+))")
 REDIR = re.compile(r"^[0-9]*(>>|>|<|<>|&>|>&|<&)[0-9]*$")
 REDIR_WORD = re.compile(r"^[0-9]*(>>|>|<|&>|>&)\S+$")
@@ -46,19 +46,15 @@ def scan(line: str, state: str, lits: list):
     out, nq, subs, heredocs, i, n = [], [], [], [], 0, len(line)
 
     open_depth = [0]   # >0 after the loop: a $( that did not close on this line (its body goes on next line)
+    open_quote = [""]  # the quote state inside that open $( at the end of the line
 
     def take_subst(i):
         if line.startswith("$(", i):
-            depth, j = 1, i + 2
-            while j < n and depth:
-                if line.startswith("$(", j):
-                    depth += 1; j += 2; continue
-                depth += (line[j] == "(") - (line[j] == ")")
-                j += 1
+            j, depth, q = paren_walk(line, i + 2, 1)
             if depth == 0:
                 subs.append(line[i + 2:j - 1])
             else:
-                subs.append(line[i + 2:]); open_depth[0] = depth
+                subs.append(line[i + 2:]); open_depth[0] = depth; open_quote[0] = q
             return j
         j = line.find("`", i + 1)
         subs.append(line[i + 1:j] if j >= 0 else line[i + 1:])
@@ -100,21 +96,45 @@ def scan(line: str, state: str, lits: list):
             i = take_subst(i); out.append("_SUB_"); continue
         out.append(SEPMAP.get(c, c)); i += 1
     if open_depth[0]:
-        state = "p%d%s" % (open_depth[0], state)   # e.g. p1d: one open paren, begun inside double quotes
+        state = "p%d%s%s" % (open_depth[0], state, open_quote[0])   # e.g. p1d": one open paren, begun inside double quotes, body currently inside a double quote
     return "".join(out), "".join(nq), state, subs, heredocs
 
 
-def continue_paren(line: str, depth: int):
-    """Feed one more raw line into an open $( … ): returns (body_part, new_depth, rest_of_line_after_close)."""
-    j = 0
-    while j < len(line) and depth:
+def paren_walk(line: str, j: int, depth: int, q: str = ""):
+    """Walk line from j counting $( ) depth the way bash does: parens inside quotes or after a backslash do not
+    count. Returns (index after the closing paren or len(line), depth, quote state at the end: '' , "'" or '"')."""
+    n = len(line)
+    while j < n and depth:
+        c = line[j]
+        if q == "'":
+            if c == "'":
+                q = ""
+            j += 1; continue
+        if c == "\\" and j + 1 < n:
+            j += 2; continue
+        if q == '"':
+            if c == '"':
+                q = ""
+            elif line.startswith("$(", j):
+                depth += 1; j += 2; continue
+            elif c == ")":
+                pass                                              # a ) inside double quotes is text
+            j += 1; continue
+        if c in ("'", '"'):
+            q = c; j += 1; continue
         if line.startswith("$(", j):
             depth += 1; j += 2; continue
-        depth += (line[j] == "(") - (line[j] == ")")
+        depth += (c == "(") - (c == ")")
         j += 1
+    return j, depth, q
+
+
+def continue_paren(line: str, depth: int, q: str = ""):
+    """Feed one more raw line into an open $( … ): returns (body_part, new_depth, rest_after_close, quote state)."""
+    j, depth, q = paren_walk(line, 0, depth, q)
     if depth == 0:
-        return line[:j - 1], 0, line[j:]
-    return line, depth, ""
+        return line[:j - 1], 0, line[j:], ""
+    return line, depth, "", q
 
 
 RAW_SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")   # inside an unquoted heredoc body quotes do not suppress expansion
@@ -205,7 +225,7 @@ def split_commands(code: str):
 
 
 def _trips(text: str) -> bool:
-    state, lits, tags, buf, pending, pbody = "n", [], [], [], [], []
+    state, lits, tags, buf, pending, pbody, ptags = "n", [], [], [], [], [], []
     for line in text.replace("\\\n", "").split("\n"):   # bash joins a backslash-newline before anything else
         if tags and state == "n" and not buf:            # inside a heredoc body
             tag, expands, dash = tags[0]
@@ -219,10 +239,17 @@ def _trips(text: str) -> bool:
         if not line.strip() and state == "n" and not buf:
             continue
         if state.startswith("p"):                         # inside a $( … ) that began on an earlier line
-            m = re.fullmatch(r"p(\d+)([nd])", state)
-            part, depth, rest = continue_paren(line, int(m.group(1)))
+            m = re.fullmatch(r"p(\d+)([nd])(['\"]?)", state)
+            if ptags:                                     # the $( line opened a heredoc: its body is text until the tag
+                tag, dash = ptags[0]
+                if (line.lstrip("\t") if dash else line) == tag:
+                    ptags.pop(0)
+                pbody.append(line)
+                continue
+            part, depth, rest, q = continue_paren(line, int(m.group(1)), m.group(3))
             pbody.append(part)
             if depth:
+                state = "p%d%s%s" % (depth, m.group(2), q)
                 continue
             if _trips("\n".join(pbody)):                  # the whole body, heredocs inside it included
                 return True
@@ -240,6 +267,7 @@ def _trips(text: str) -> bool:
         buf.append(code); pending.extend(heredocs)
         if state.startswith("p"):
             pbody = [subs.pop()]                           # the partial body; judged once the parens close
+            ptags = [(a or b or c2, bool(d)) for d, a, b, c2 in re.findall(r"<<(-?)\s*(?:'([^']+)'|\"([^\"]+)\"|(\w+))", pbody[0])]
         for body in subs:
             if _trips(body):
                 return True
@@ -269,6 +297,10 @@ def trips(text: str) -> bool:
 
 def run_fixtures(path: str) -> int:
     bad = 0
+    import glob
+    for f in sorted(glob.glob(os.path.join(os.path.dirname(path), "samples", "*.pass")) + glob.glob(os.path.join(os.path.dirname(path), "samples", "*.trip"))):
+        want = f.rsplit(".", 1)[1]; got = trips(open(f, encoding="utf-8").read()); ok = got == (want == "trip")
+        print(f"{'ok  ' if ok else 'FAIL'} {want:4} sample {os.path.basename(f)}"); bad += 0 if ok else 1
     for raw in open(path, encoding="utf-8"):
         raw = raw.rstrip("\n")
         if not raw or raw.startswith("#"):

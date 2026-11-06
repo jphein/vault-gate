@@ -82,12 +82,23 @@ if [ -n "$TOKEN" ]; then
     STATUS=$(BW_SESSION="$TOKEN" "$BW" status 2>/dev/null \
         | python3 -I -c "import json,sys; print(json.load(sys.stdin).get('status','unknown'))" 2>/dev/null \
         || echo "unknown")
-    if [ "$STATUS" = "unlocked" ]; then
-        exit 0
-    fi
-    # Stale token — clear it
-    token_clear "$TOKEN"
-    echo "VAULT: Cached token expired, need fresh unlock." >&2
+    case "$STATUS" in
+        unlocked)
+            exit 0 ;;
+        locked|unauthenticated)
+            # A DEFINITE answer from bw with this token: it is stale. Never in a dry run (2026-11-06 13:06: a dry run
+            # with a stub bw that said "locked" deleted JP's valid 12:42 token; the window and card that followed were real).
+            if [ -n "${VAULT_GATE_DRY_RUN:-}" ]; then
+                echo "DRY-RUN: bw says $STATUS for the cached token; a real run would clear it. Nothing touched." >&2
+                exit 0
+            fi
+            token_clear "$TOKEN"
+            echo "VAULT: Cached token is $STATUS, need fresh unlock." >&2 ;;
+        *)
+            # No usable answer (bw missing, network, parse error): the token may be fine. Keep it and let the command run.
+            echo "VAULT: could not verify the cached token (bw status: $STATUS); keeping it." >&2
+            exit 0 ;;
+    esac
 fi
 
 # Check vault status without a session
@@ -245,7 +256,7 @@ while [ $WAITED -lt $MAX_WAIT ]; do
             echo "VAULT: Unlocked successfully. Proceeding." >&2
             exit 0
         fi
-        token_clear "$TOKEN"  # Bad token, keep waiting
+        case "$VERIFY" in locked|unauthenticated) token_clear "$TOKEN" ;; esac   # only a definite bad token is cleared
     fi
 
     if [ -f "$STATUS_FILE" ]; then
