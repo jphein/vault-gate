@@ -43,6 +43,27 @@ rm -rf "$T/run/vault-gate.remote-open"; printf 'unlocking' > "$T/run/bw-unlock-s
 out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
 grep -q "DRY-RUN: would open on wakizashi" <<<"$out" && [ $rc -eq 0 ] && ok "an abandoned 'unlocking' status older than LOCK_TTL does not block a relaunch" || bad "stale status: rc=$rc out=$out"
 rm -f "$T/run/bw-unlock-status"
+# A present token is never touched unless bw says locked/unauthenticated for it, and never in a dry run (2026-11-06 13:06).
+printf 'tok-12-42' > "$T/run/bw-session-token"; chmod 600 "$T/run/bw-session-token"; touch -d '-30 minutes' "$T/run/bw-session-token"
+cat > "$T/bin/bw" <<'S'
+#!/bin/sh
+[ -n "$BW_SESSION" ] && { echo '{"status":"unlocked"}'; exit 0; }; echo '{"status":"locked"}'
+S
+chmod +x "$T/bin/bw"
+out=$(run env); rc=$?; [ $rc -eq 0 ] && [ "$(cat "$T/run/bw-session-token")" = tok-12-42 ] && ok "a valid token: exit 0, token untouched" || bad "valid token: rc=$rc out=$out"
+cat > "$T/bin/bw" <<'S'
+#!/bin/sh
+echo garbage
+S
+chmod +x "$T/bin/bw"
+out=$(run env); rc=$?; [ $rc -eq 0 ] && [ "$(cat "$T/run/bw-session-token")" = tok-12-42 ] && ok "an unverifiable token (bw answers garbage): exit 0, token kept" || bad "unverifiable token: rc=$rc out=$out"
+cat > "$T/bin/bw" <<'S'
+#!/bin/sh
+echo '{"status":"locked"}'
+S
+chmod +x "$T/bin/bw"
+out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?; [ $rc -eq 0 ] && [ -f "$T/run/bw-session-token" ] && grep -q "Nothing touched" <<<"$out" && ok "dry run with bw saying locked: token kept" || bad "dry run stale: rc=$rc out=$out"
+rm -rf "$T/run/vault-gate.remote-open"; out=$(run env VAULT_GATE_MAX_WAIT=1); rc=$?; [ ! -f "$T/run/bw-session-token" ] && grep -q "Cached token is locked" <<<"$out" && ok "a real run with bw saying locked clears the stale token and opens one window" || bad "real stale: rc=$rc files=$(ls "$T/run" | tr '\n' ' ') out=$out"
 chmod 755 "$T/run"; out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
 grep -q "BLOCKED: .* not a private (0700, mine) runtime dir" <<<"$out" && [ $rc -eq 2 ] && ok "a runtime dir that is not 0700 is refused" || bad "runtime dir check: rc=$rc out=$out"
 chmod 700 "$T/run"

@@ -100,3 +100,12 @@ pass|gh pr create --title "x" --body "$(cat <<'EOF'<NL>The hook grepped for `bw 
 trip|gh pr create --body "$(cat <<'EOF'<NL>text<NL>EOF<NL>)"; bw status
 trip|X="$(cat <<EOF<NL>$(bw get password y)<NL>EOF<NL>)"
 pass|git commit -q -F - <<'EOF'<NL>fix: `bw status` in docs<NL><NL>Co-Authored-By: x<NL>EOF
+# automated security review 2026-11-06: paren depth across lines must be quote-aware; the loose fallback sees bw; and bw)
+pass|X="$(cat <<'EOF'<NL>a ) stray paren in a quoted heredoc<NL>EOF<NL>)"; echo "$X"
+trip|X="$(cat <<'EOF'<NL>a ) stray paren in a quoted heredoc<NL>EOF<NL>)"; bw status
+pass|X="$(printf '%s' ')'<NL>)"; echo done
+trip|X="$(printf '%s' ')'<NL>)"; bw sync
+pass|X="$(echo "(" <NL>)"; echo done
+trip|X="$(echo "(" <NL>)"<NL>bw status
+trip|(bw status;)
+trip|true;bw status

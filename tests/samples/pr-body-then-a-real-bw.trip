@@ -1,0 +1,14 @@
+cd ~/Projects/vault-gate && git add vault-gate-match.py tests/match-fixtures.txt && git commit -q -m "fix(matcher): paren depth across lines is quote- and escape-aware (a ) or ( inside a quoted heredoc body no longer closes or extends the \$( ) early); the loose fallback also sees bw; and bw)
+
+Automated security review on the #3 squash flagged the naive depth count. 104 fixtures.
+
+Co-Authored-By: Claude Mythos 5.1 <noreply@anthropic.com>" && git push -q -u origin fix/paren-depth-quote-aware && gh pr create --title "fix(matcher): quote-aware paren depth across lines; loose fallback sees bw; and bw)" --body "$(cat <<'EOF'
+Follow-up to #3 from the automated security review of its squash: the multi-line `$( )` depth count ignored quotes and escapes, so a `)` or `(` inside a quoted heredoc body could close the substitution early or swallow the rest of the text. Depth now follows bash's rules (parens inside single or double quotes and after a backslash do not count), the quote state inside the open substitution is carried between lines, and the fail-closed loose fallback also matches a trailing `;` or `)`. Eight fixtures for those shapes (104 total, all green); tests/run.sh green; an unparsable line still gates (fail-closed shown in the PR run).
+
+Merged by ubox0-dd under the standing-yes rule (fixtures green, the pre-fix matcher fails the new fixtures, no secrets).
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)" 2>&1 | tail -1; N=$(gh pr view --json number --jq .number); gh pr merge "$N" --squash --delete-branch 2>&1 | tail -1; git checkout -q main && git pull -q --ff-only && git log --oneline -1 && git branch --show-current && bash tests/run.sh | tail -1 && bash ~/.claude/tests/test-vault-gate-hook.sh | tail -1
+
+bw status
