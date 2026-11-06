@@ -87,3 +87,11 @@ pass|cat <<"EOF"<NL>bw status<NL>EOF
 pass|command -p -v bw
 pass|echo "<<EOF"<NL>echo still text
 trip|echo "<<EOF"<NL>bw status
+# xreview pass 4 shapes
+trip|BW="$HOME/.npm-global/bin/bw"; "$BW" status
+trip|BW=~/.npm-global/bin/bw<NL>$BW get password x
+trip|cat <<<"text"<NL>bw status
+trip|env --split-string='bw status'
+pass|cat <<EOF<NL>  EOF<NL>bw status<NL>EOF
+trip|cat <<-EOF<NL>	EOF<NL>bw status
+pass|X=bw; echo "$X"

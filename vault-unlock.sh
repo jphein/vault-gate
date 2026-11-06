@@ -41,6 +41,7 @@ token_write() {
         local readback
         readback=$(secret-tool lookup service vault-gate account bw-session 2>/dev/null || true)
         if [ "$readback" != "$token" ]; then        # equality, not mere presence: a previous token is not this one
+            secret-tool clear service vault-gate account bw-session 2>/dev/null || true   # never leave a stale entry the hook would prefer over the file
             echo -e "  ${YELLOW}Keyring write failed — falling back to file storage${RESET}" >&2
             printf '%s' "$token" > "$SESSION_FILE"
             chmod 600 "$SESSION_FILE"

@@ -65,11 +65,13 @@ token_clear() {   # clear ONLY the value we found stale, under the lock the publ
     local stale="$1"
     (
         flock -w 5 8 || exit 0
-        [ "$(token_read)" = "$stale" ] || exit 0
-        if [ "$STORAGE" = "keyring" ]; then
+        # clear only the backend(s) that actually hold the stale value: a fresh token in the other one survives
+        if [ "$STORAGE" = "keyring" ] && [ "$(secret-tool lookup service vault-gate account bw-session 2>/dev/null || true)" = "$stale" ]; then
             secret-tool clear service vault-gate account bw-session 2>/dev/null || true
         fi
-        rm -f "$SESSION_FILE"
+        if [ -f "$SESSION_FILE" ] && [ "$(cat "$SESSION_FILE")" = "$stale" ]; then
+            rm -f "$SESSION_FILE"
+        fi
     ) 8>"$TOKENLOCK"
 }
 

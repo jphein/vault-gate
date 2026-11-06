@@ -70,10 +70,12 @@ def scan(line: str, state: str, lits: list):
         if state == "n":
             if c == "\\" and i + 1 < n:
                 out.append(line[i:i + 2]); nq.append(line[i:i + 2]); i += 2; continue
+            if line.startswith("<<<", i):                      # a here-string, not a heredoc
+                out.append("<<<"); nq.append("<<<"); i += 3; continue
             if line.startswith("<<", i):                       # a heredoc delimiter, read here so quoted "<<EOF" text never counts
-                m = re.match(r"<<-?\s*(?:'([^']+)'|\"([^\"]+)\"|(\w+))", line[i:])
+                m = re.match(r"<<(-?)\s*(?:'([^']+)'|\"([^\"]+)\"|(\w+))", line[i:])
                 if m:
-                    a, b, c2 = m.groups(); heredocs.append((a or b or c2, not (a or b)))
+                    dash, a, b, c2 = m.groups(); heredocs.append((a or b or c2, not (a or b), bool(dash)))
                     out.append(" "); nq.append(" "); i += m.end(); continue
             if c == "'" or line.startswith("$'", i):
                 lits.append(""); ph = f"'\x00{len(lits) - 1}\x00'"; out.append(ph); nq.append(ph); state = "s"; i += 2 if c == "$" else 1; continue
@@ -107,6 +109,10 @@ def is_bw(word: str) -> bool:
     return os.path.basename(word) == "bw"
 
 
+BW_VARS: set = set()   # variables assigned a path whose basename is bw, within the command text being judged
+VARREF = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
+
+
 def head_is_bw(words: list, lits: list) -> bool:
     words = [unquote(w, lits) for w in words]
     if words and words[0] in NEVER_A_COMMAND:
@@ -114,8 +120,16 @@ def head_is_bw(words: list, lits: list) -> bool:
     i = 0
     while i < len(words):
         w = words[i]
-        if w == "--" or w in RESERVED or ASSIGN.fullmatch(w) or REDIR_WORD.match(w):
+        if ASSIGN.fullmatch(w):
+            name, val = w.split("=", 1)
+            if is_bw(val.strip("\"'")):
+                BW_VARS.add(name)                                 # BW="$HOME/.npm-global/bin/bw"; "$BW" status
             i += 1; continue
+        if w == "--" or w in RESERVED or REDIR_WORD.match(w):
+            i += 1; continue
+        m = VARREF.fullmatch(w)
+        if m and m.group(1) in BW_VARS:
+            return True
         if REDIR.match(w):
             i += 2; continue
         base = os.path.basename(w)
@@ -128,6 +142,8 @@ def head_is_bw(words: list, lits: list) -> bool:
                     i += 1; break
                 if base == "command" and (o in ("-v", "-V") or (o.startswith("-") and not o.startswith("--") and ("v" in o or "V" in o))):
                     return False                                  # a lookup, not a run
+                if base == "env" and o.startswith("--split-string="):
+                    return trips(o.split("=", 1)[1])
                 if base == "env" and (o == "-S" or o == "--split-string") and i + 1 < len(words):
                     return trips(words[i + 1])                    # env -S 'bw status' runs the string
                 if o.startswith("--"):
@@ -172,8 +188,8 @@ def _trips(text: str) -> bool:
     state, lits, tags, buf, pending = "n", [], [], [], []
     for line in text.replace("\\\n", "").split("\n"):   # bash joins a backslash-newline before anything else
         if tags and state == "n" and not buf:            # inside a heredoc body
-            tag, expands = tags[0]
-            if line.strip() == tag:
+            tag, expands, dash = tags[0]
+            if (line.lstrip("\t") if dash else line) == tag:   # bash: the delimiter alone on its line; <<- strips leading tabs only
                 tags.pop(0); continue
             if expands:                                   # an unquoted heredoc runs $( ) in its body, quotes or not
                 for m in RAW_SUBST.finditer(line):
@@ -202,6 +218,7 @@ def _trips(text: str) -> bool:
 
 
 def trips(text: str) -> bool:
+    BW_VARS.clear()
     try:
         return _trips(text)
     except Exception:                                      # a parser failure never skips the gate
