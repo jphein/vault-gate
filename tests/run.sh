@@ -23,7 +23,8 @@ for a in "$@"; do h=$a; done; host=""
 while [ $# -gt 0 ]; do case "$1" in -o) shift;; -*) ;; *) host=$1; break;; esac; shift; done
 case "$host" in katana) printf '(uint64 362308,)\n(false,)\n';; wakizashi) printf '(uint64 153087,)\n(false,)\n';; *) exit 255;; esac
 S
-printf '#!/bin/sh\nexit 0\n' > "$T/bin/tmux"; printf '#!/bin/sh\necho "ask abc123def456 filed"\n' > "$T/bin/ask"
+printf '#!/bin/sh\nexit 0\n' > "$T/bin/tmux"; # the real gateway exits 22 without --who/ASK_WHO (measured 2026-11-11 01:33: the card stayed "unfiled", silently)
+printf '#!/bin/sh\ncase " $* " in *" --who "*) echo "ask abc123def456 filed";; *) echo "ask: add: say who you are with --who <lane> (or ASK_WHO)" >&2; exit 22;; esac\n' > "$T/bin/ask"
 chmod +x "$T/bin"/*
 run() { PATH="$T/bin:$PATH" XDG_RUNTIME_DIR="$T/run" HOME="$T" VAULT_GATE_BW="$T/bin/bw" VAULT_GATE_SSH="$T/bin/ssh" VAULT_GATE_MAX_WAIT=2 REMOTE_DESKTOPS="ghost katana wakizashi" "$@" bash "$R/vault-gate.sh" 2>&1; }
 out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
@@ -39,6 +40,10 @@ rm -rf "$T/run/vault-gate.remote-open"
 opened=$(cat "$T/a.out" "$T/b.out" | grep -c "VAULT: Unlock window opened on"); refused=$(cat "$T/a.out" "$T/b.out" | grep -c "BLOCKED: unlock pending")
 [ "$opened" = 1 ] && [ "$refused" = 1 ] && ok "two concurrent callers: exactly one opens, one is refused (flock)" || bad "concurrency: opened=$opened refused=$refused: $(cat "$T/a.out" "$T/b.out" | tr '\n' ' ' | cut -c1-300)"
 [ "$(cat "$T/run/vault-gate.remote-open/card")" = abc123def456 ] && ok "the card id is stored in the lock dir" || bad "card not stored"
+rm -rf "$T/run/vault-gate.remote-open"; printf '#!/bin/sh\necho "ask: rejected: title too long" >&2; exit 22\n' > "$T/bin/ask"
+out=$(run); rc=$?
+grep -q "card unfiled" <<<"$out" && [ "$rc" -eq 2 ] && grep -q "card unfiled: ask add said: ask: rejected: title too long" "$T/run/vault-gate.log" && ok "a refused card leaves the gateway's words in the log and still blocks (rc 2)" || bad "a refused card is silent (log: $(grep -c 'card unfiled: ask add said' "$T/run/vault-gate.log" 2>/dev/null))"
+printf '#!/bin/sh\ncase " $* " in *" --who "*) echo "ask abc123def456 filed";; *) echo "ask: add: say who you are with --who <lane> (or ASK_WHO)" >&2; exit 22;; esac\n' > "$T/bin/ask"
 rm -rf "$T/run/vault-gate.remote-open"; printf 'unlocking' > "$T/run/bw-unlock-status"; touch -d '-11 minutes' "$T/run/bw-unlock-status"
 out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
 grep -q "DRY-RUN: would open on wakizashi" <<<"$out" && [ $rc -eq 0 ] && ok "an abandoned 'unlocking' status older than LOCK_TTL does not block a relaunch" || bad "stale status: rc=$rc out=$out"
