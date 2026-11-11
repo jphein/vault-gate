@@ -201,12 +201,18 @@ else
         printf '%s' "$desk" > "$LOCK/desk"; touch "$LOCK"
         card=unfiled
         if command -v ask >/dev/null 2>&1; then
-            out=$(ask add --key vault:unlock --title "Unlock the password vault on $(hostname)" \
+            # --who is mandatory for the gateway (exit 22 without it; 2026-11-11 01:33 the card stayed "unfiled" and
+            # nothing said why). A repeat merges into the open vault:unlock card by key, so this is idempotent.
+            out=$(ask add --who vault-gate --key vault:unlock --title "Unlock the password vault on $(hostname)" \
                 --action "do: type your master password in the 'Vault Unlock ($(hostname))' window on $desk" \
                 --minutes 1 --due "$(date +%F)" --lane admin --owner vault-gate \
                 --why "agent jobs on $(hostname) wait for the vault; every retry is refused until it is unlocked" \
                 --close "file:$SESSION_FILE" 2>&1) && card=$(grep -oE '\b[0-9a-f]{12}\b' <<<"$out" | head -1)
-            [ -n "$card" ] || card=unfiled
+            if [ -z "$card" ] || [ "$card" = unfiled ]; then   # card=unfiled is the preset, so test both
+                card=unfiled
+                # the gateway's own words go to the log, so an unfiled card is never silent again
+                { printf '%s\n' "[$(date -Iseconds)] card unfiled: ask add said: $(tr -d '\000-\011\013-\037\177' <<<"$out" | tr '\n' ' ' | cut -c1-300)"; } >> "$LOG" 2>/dev/null || true
+            fi
         fi
         printf '%s' "$card" > "$LOCK/card"
         { echo "[$(date -Iseconds)] headless: window on $desk, card $card"; } >> "$LOG" 2>/dev/null || true
