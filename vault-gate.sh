@@ -201,9 +201,10 @@ else
         printf '%s' "$desk" > "$LOCK/desk"; touch "$LOCK"
         card=unfiled
         if command -v ask >/dev/null 2>&1; then
-            # --who is mandatory for the gateway (exit 22 without it; 2026-11-11 01:33 the card stayed "unfiled" and
-            # nothing said why). A repeat merges into the open vault:unlock card by key, so this is idempotent.
-            out=$(ask add --who vault-gate --key vault:unlock --title "Unlock the password vault on $(hostname)" \
+            # The actor is mandatory for the gateway (exit 22 without it; 2026-11-11 01:33 the card stayed "unfiled" and
+            # nothing said why). `ask add` has no --who flag (only done/no/snooze do): the actor goes in $ASK_WHO
+            # (2026-11-14 07:4x: every unlock card on familiar went unfiled with a usage error since 11-11). A repeat merges into the open vault:unlock card by key, so this is idempotent.
+            out=$(ASK_WHO=vault-gate ask add --key vault:unlock --title "Unlock the password vault on $(hostname)" \
                 --action "do: type your master password in the 'Vault Unlock ($(hostname))' window on $desk" \
                 --minutes 1 --due "$(date +%F)" --lane admin --owner vault-gate \
                 --why "agent jobs on $(hostname) wait for the vault; every retry is refused until it is unlocked" \
