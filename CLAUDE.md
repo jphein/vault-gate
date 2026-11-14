@@ -28,6 +28,18 @@ bw get password 'some-item'  # Ghostty opens, unlock, token cached
 tail "$XDG_RUNTIME_DIR/vault-gate.log"  # verify hook fired
 ```
 
+## Known shapes (bw from a timer or a ProxyCommand)
+
+- **2026-11-14 07:42, stale session + closed stdin → bw exits 0 with nothing.** After familiar's 04:57 reboot a timer
+  (status-coverage → realm-cloud `aws-env.sh` → `bw get item`) ran with a stale session token and `stdin=/dev/null`.
+  bw prompted for the master password, node's readline threw `ERR_USE_AFTER_CLOSE` after the prompt, and bw **exited 0**
+  with empty stdout and exactly 733 chars of stderr (reproduced on familiar with `BW_SESSION=invalid … </dev/null`).
+  A caller that judges by exit code reads an empty success; the next layer says "no usable login", and the vault-locked
+  signal never appears. **Rule:** every non-interactive bw call carries `--nointeraction` (measured: the same state then
+  exits 1 "Vault is locked.") and treats rc 0 with empty stdout on `get`/`list` as a failure, never a value. Reference
+  implementation: realm-cloud `bootstrap/bw_retry.py` (#229). Not yet proven on a real locked vault: the next reboot is
+  the proof (ubox0 HANDOFF 2026-11-14).
+
 ## Don't
 
 - Don't reach into `~/.claude/settings.local.json` outside of `install.sh` / `uninstall.sh`. Manual JSON fiddling is how hooks drift.
