@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do case "$1" in -o) shift;; -*) ;; *) host=$1; break;; esac;
 case "$host" in katana) printf '(uint64 362308,)\n(false,)\n';; wakizashi) printf '(uint64 153087,)\n(false,)\n';; *) exit 255;; esac
 S
 printf '#!/bin/sh\nexit 0\n' > "$T/bin/tmux"; # the real gateway exits 22 without --who/ASK_WHO (measured 2026-11-11 01:33: the card stayed "unfiled", silently)
-printf '#!/bin/sh\ncase " $* " in *" --who "*) echo "ask abc123def456 filed";; *) echo "ask: add: say who you are with --who <lane> (or ASK_WHO)" >&2; exit 22;; esac\n' > "$T/bin/ask"
+printf '#!/bin/sh\ncase " $* " in *" --who "*) echo "ask abc123def456 filed"; exit 0;; esac\n[ -n "$ASK_WHO" ] && { echo "ask abc123def456 filed"; exit 0; }\necho "ask: add: say who you are with --who <lane> (or ASK_WHO)" >&2; exit 22\n' > "$T/bin/ask"
 chmod +x "$T/bin"/*
 run() { PATH="$T/bin:$PATH" XDG_RUNTIME_DIR="$T/run" HOME="$T" VAULT_GATE_BW="$T/bin/bw" VAULT_GATE_SSH="$T/bin/ssh" VAULT_GATE_MAX_WAIT=2 REMOTE_DESKTOPS="ghost katana wakizashi" "$@" bash "$R/vault-gate.sh" 2>&1; }
 out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
@@ -43,7 +43,7 @@ opened=$(cat "$T/a.out" "$T/b.out" | grep -c "VAULT: Unlock window opened on"); 
 rm -rf "$T/run/vault-gate.remote-open"; printf '#!/bin/sh\necho "ask: rejected: title too long" >&2; exit 22\n' > "$T/bin/ask"
 out=$(run); rc=$?
 grep -q "card unfiled" <<<"$out" && [ "$rc" -eq 2 ] && grep -q "card unfiled: ask add said: ask: rejected: title too long" "$T/run/vault-gate.log" && ok "a refused card leaves the gateway's words in the log and still blocks (rc 2)" || bad "a refused card is silent (log: $(grep -c 'card unfiled: ask add said' "$T/run/vault-gate.log" 2>/dev/null))"
-printf '#!/bin/sh\ncase " $* " in *" --who "*) echo "ask abc123def456 filed";; *) echo "ask: add: say who you are with --who <lane> (or ASK_WHO)" >&2; exit 22;; esac\n' > "$T/bin/ask"
+printf '#!/bin/sh\ncase " $* " in *" --who "*) echo "ask abc123def456 filed"; exit 0;; esac\n[ -n "$ASK_WHO" ] && { echo "ask abc123def456 filed"; exit 0; }\necho "ask: add: say who you are with --who <lane> (or ASK_WHO)" >&2; exit 22\n' > "$T/bin/ask"
 rm -rf "$T/run/vault-gate.remote-open"; printf 'unlocking' > "$T/run/bw-unlock-status"; touch -d '-11 minutes' "$T/run/bw-unlock-status"
 out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
 grep -q "DRY-RUN: would open on wakizashi" <<<"$out" && [ $rc -eq 0 ] && ok "an abandoned 'unlocking' status older than LOCK_TTL does not block a relaunch" || bad "stale status: rc=$rc out=$out"
@@ -72,4 +72,27 @@ rm -rf "$T/run/vault-gate.remote-open"; out=$(run env VAULT_GATE_MAX_WAIT=1); rc
 chmod 755 "$T/run"; out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
 grep -q "BLOCKED: .* not a private (0700, mine) runtime dir" <<<"$out" && [ $rc -eq 2 ] && ok "a runtime dir that is not 0700 is refused" || bad "runtime dir check: rc=$rc out=$out"
 chmod 700 "$T/run"
+# lane hosts never unlock (2026-11-17 serialhub: no vault CLI, an unlock window opened locally, its script failed, and
+# the gate reported "too many wrong passwords"): no CLI, or a host config marking it a lane host → refuse at once, no
+# window, no card, and say where secrets come from instead
+rm -rf "$T/run/vault-gate.remote-open" "$T/run/bw-unlock-status"
+out=$(run env VAULT_GATE_BW="$T/bin/no-such-cli"); rc=$?
+[ $rc -eq 2 ] && grep -q "BLOCKED: no vault on this host" <<<"$out" && ! grep -q "Unlock window\|DRY-RUN\|wrong password" <<<"$out" && [ ! -e "$T/run/vault-gate.remote-open" ] \
+  && ok "no vault CLI: refused at once (exit 2), no window, no card" || bad "no CLI: rc=$rc out=$out"
+rm -rf "$T/run/vault-gate.remote-open" "$T/run/bw-unlock-status"
+mkdir -p "$T/.config/vault-gate"; printf 'LANE_HOST=1\n' > "$T/.config/vault-gate/config"
+out=$(run env); rc=$?
+[ $rc -eq 2 ] && grep -q "BLOCKED: no vault on this host" <<<"$out" && ! grep -q "Unlock window\|wrong password" <<<"$out" && [ ! -e "$T/run/vault-gate.remote-open" ] \
+  && ok "LANE_HOST=1 in the host's config: refused even with a CLI present" || bad "lane host: rc=$rc out=$out"
+rm -f "$T/.config/vault-gate/config"
+# the PATH wrapper says the same and exits 2, instead of exec'ing a CLI that is not there (HOME=$T has none)
+out=$(HOME="$T" bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
+[ $rc -eq 2 ] && grep -q "no vault on this host" <<<"$out" && ok "wrapper on a host with no CLI: exit 2, says why" || bad "wrapper no CLI: rc=$rc out=$out"
+mkdir -p "$T/.npm-global/bin"; printf '#!/bin/sh\necho real-cli-ran\n' > "$T/.npm-global/bin/bw"; chmod +x "$T/.npm-global/bin/bw"
+out=$(HOME="$T" BW_SESSION=x bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
+[ $rc -eq 0 ] && [ "$out" = real-cli-ran ] && ok "wrapper with a CLI present: execs it" || bad "wrapper with CLI: rc=$rc out=$out"
+printf 'LANE_HOST=1\n' > "$T/.config/vault-gate/config"
+out=$(HOME="$T" BW_SESSION=x bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
+[ $rc -eq 2 ] && [[ "$out" != *real-cli-ran* ]] && ok "wrapper on a LANE_HOST=1 host: exit 2 even with a CLI" || bad "wrapper lane: rc=$rc out=$out"
+rm -rf "$T/.npm-global" "$T/.config/vault-gate/config"
 echo "$fails failure(s)"; [ "$fails" -eq 0 ]
