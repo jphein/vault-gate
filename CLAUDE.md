@@ -48,6 +48,9 @@ tail "$XDG_RUNTIME_DIR/vault-gate.log"  # verify hook fired
   lowdb 1.0.0's `FileSync` writes with a non-atomic `writeFileSync`, so a CLI starting while another one writes can read
   half a file. It happened on familiar 2026-11-07 13:14:59 and 2026-11-17 20:31:13 (load 32, six timers at once).
   Upstream: bitwarden/clients#2735 (open since 2021: "not logged in" and a corrupt cache during scripted bulk use).
+  **Not verified:** the source was read for 2026.6.0 only (familiar). katana's 2026.10.0 and wakizashi's native
+  2026.9.1 were not re-read; the lock and the stub guard do not depend on the CLI's internals, but the race's exact
+  file:line may have moved.
 - **`cli-lock.sh install`** wraps `~/.npm-global/bin/bw`, the one path every caller runs:
   1. a host-wide `flock` (`$XDG_RUNTIME_DIR/vault-cli.lock`, wait 120 s, then exit 75). Interactive `unlock` and
      `login` skip it: a person at a password prompt would stall every other caller. **Known limit:** they still read
