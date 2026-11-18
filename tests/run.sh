@@ -207,15 +207,22 @@ if command -v node >/dev/null; then
     && ok "a second install over a backup symlink replaces the backup, never writes through it (the CLI's code untouched)" || bad "second install damaged the CLI's code"
   printf 'echo hi\n' > "$CL/tool.sh"; rm -f "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock"; ln -s "$CL/tool.sh" "$CL/bin/cli"
   cl install >/dev/null 2>&1; [ $? = 1 ] && [ -L "$CL/bin/cli" ] && ok "a symlink to a non-.js target is refused, nothing changed" || bad "non-js symlink accepted"
-  # the native standalone build (wakizashi): a real ELF (perl, which ignores its own name; uutils echo does not) moves to the backup and the locking script execs it
-  rm -f "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock"; cp "$(command -v perl)" "$CL/bin/cli"; elf_sum=$(sha256sum < "$CL/bin/cli")
-  cl install >/dev/null; out=$(E "$CL/bin/cli" -e 'print "@ARGV"' hello elf 2>&1)
-  cl check >/dev/null && [ "$out" = "hello elf" ] && [ "$(sha256sum < "$CL/bin/cli.pre-cli-lock")" = "$elf_sum" ] && head -1 "$CL/bin/cli" | grep -q '^#!/bin/sh' \
-    && ok "install on a native binary: it moves to the backup unchanged, the locked script runs it (args kept)" || bad "elf install: out=$out"
+  # the native standalone build (wakizashi): a real ELF (perl; asserted ELF below) stays reachable under its OWN name
+  # via a hard link in .cli-lock-real/, the backup is a second hard link, and the entry is never missing
+  rm -rf "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock" "$CL/bin/.cli-lock-real"; cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; elf_sum=$(sha256sum < "$CL/bin/cli")
+  [ "$(head -c 4 "$CL/bin/cli" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ] && ok "fixture: the stand-in CLI is a real ELF (the ELF branch runs, not the shebang one)" || bad "fixture is not an ELF"
+  cl install >/dev/null; out=$(E "$CL/bin/cli" -e 'print "@ARGV|" . $^X' hello elf 2>&1)
+  cl check >/dev/null && [ "${out%%|*}" = "hello elf" ] && [ "${out##*/}" = cli ] && [ "$(stat -c %h "$CL/bin/.cli-lock-real/cli")" = 2 ] \
+    && [ "$(sha256sum < "$CL/bin/cli.pre-cli-lock")" = "$elf_sum" ] && head -1 "$CL/bin/cli" | grep -q '^#!/bin/sh' \
+    && ok "install on a native binary: it runs under its own name (argv basename 'cli'), args kept; real + backup are one inode (no copy)" || bad "elf install: out=$out"
   ( exec 9>>"$CL/run/vault-cli.lock"; flock 9; sleep 3 ) & hp=$!; sleep 0.3
   out=$(VAULT_CLI_LOCK_WAIT=1 E "$CL/bin/cli" x 2>&1); rc=$?; wait $hp
   [ $rc = 75 ] && ok "the native binary's entry waits on the host lock like the others" || bad "elf lock: rc=$rc out=$out"
-  cl remove >/dev/null; [ "$(sha256sum < "$CL/bin/cli")" = "$elf_sum" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && ok "remove on a native binary: the binary is back, byte-identical" || bad "elf remove"
+  # an interrupted state (entry gone, backup there) is never a silent "nothing to wrap": install says to run remove
+  mv "$CL/bin/cli" "$CL/bin/cli.moved"; out=$(cl install 2>&1); rc=$?; mv "$CL/bin/cli.moved" "$CL/bin/cli"
+  [ $rc = 1 ] && grep -q "run cli-lock.sh remove" <<<"$out" && ok "a missing entry with a backup present: install says to run remove (no silent nothing-to-wrap)" || bad "interrupted: rc=$rc out=$out"
+  cl remove >/dev/null; [ "$(sha256sum < "$CL/bin/cli")" = "$elf_sum" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ ! -e "$CL/bin/.cli-lock-real" ] \
+    && ok "remove on a native binary: the binary is back byte-identical, the hard links gone" || bad "elf remove"
 else
   bad "node is not on PATH: the symlink cases cannot run (never a silent skip)"
 fi

@@ -58,7 +58,10 @@ check)
   has_lock && { echo "locked entry: $ENTRY"; exit 0; }
   echo "UNLOCKED entry: $ENTRY"; exit 1 ;;
 install)
-  [ -e "$ENTRY" ] || [ -L "$ENTRY" ] || { echo "no vault CLI at $ENTRY: nothing to wrap"; exit 2; }
+  if ! [ -e "$ENTRY" ] && ! [ -L "$ENTRY" ]; then
+    { [ -e "$ENTRY.pre-cli-lock" ] || [ -L "$ENTRY.pre-cli-lock" ]; } && { echo "$ENTRY is missing but its backup exists: run cli-lock.sh remove to restore it"; exit 1; }
+    echo "no vault CLI at $ENTRY: nothing to wrap"; exit 2
+  fi
   has_lock && { echo "already locked: $ENTRY"; exit 0; }
   grep -qF "# vault-gate cli-lock" "$ENTRY" 2>/dev/null && { echo "$ENTRY carries an older cli-lock: run remove first"; exit 1; }
   bak="$ENTRY.pre-cli-lock"; tmp="$ENTRY.cli-lock.$$"; elf=0
@@ -68,10 +71,14 @@ install)
     case "$target" in *.js) ;; *) echo "the symlink's target is not a .js file ($target): refusing to guess how to run it"; exit 1 ;; esac
     { printf '#!/bin/sh\n%s\n%s\n' "$MARK" "$LINES"; printf 'exec node %s "$@"\n' "$(sq "$target")"; } > "$tmp"
   elif [ "$(head -c 4 "$ENTRY" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ]; then
-    # the CLI's native standalone build (wakizashi 2026.9.1, 143 MB): it MOVES to the backup path (no second copy of
-    # the binary) and the entry becomes the locking script that execs it there
-    elf=1
-    { printf '#!/bin/sh\n%s\n%s\n' "$MARK" "$LINES"; printf 'exec %s "$@"\n' "$(sq "$bak")"; } > "$tmp"
+    # the CLI's native standalone build (wakizashi 2026.9.1, 143 MB). It stays reachable under its OWN name: a hard link
+    # at <dir>/.cli-lock-real/<name> (same filesystem, no second copy), which the locking script execs, so argv[0]'s
+    # basename and the bytes are unchanged (xreview 2026-11-17: a binary may select behaviour by its name). The backup
+    # is a second hard link, and one atomic rename puts the script over the entry: the entry never goes missing.
+    elf=1; real="$(dirname "$ENTRY")/.cli-lock-real/$(basename "$ENTRY")"
+    mkdir -p "$(dirname "$real")"; rm -f "$real"
+    ln "$ENTRY" "$real" || { rm -f "$tmp"; echo "cannot hard-link $ENTRY to $real: nothing changed"; exit 1; }
+    { printf '#!/bin/sh\n%s\n%s\n' "$MARK" "$LINES"; printf 'exec %s "$@"\n' "$(sq "$real")"; } > "$tmp"
   else
     head -1 "$ENTRY" | grep -q '^#!' || { echo "$ENTRY is neither a script with a shebang nor a native binary: refusing to edit it"; exit 1; }
     { head -1 "$ENTRY"; printf '%s\n%s\n' "$MARK" "$LINES"; tail -n +2 "$ENTRY"; } > "$tmp"
@@ -79,12 +86,14 @@ install)
   chmod 755 "$tmp"; sh -n "$tmp" || { rm -f "$tmp"; echo "the wrapped entry does not parse: nothing changed"; exit 1; }
   # the backup is replaced, never written THROUGH: an old backup may be a symlink to the CLI's own code
   rm -f "$bak"
-  if [ "$elf" = 1 ]; then mv -f "$ENTRY" "$bak"; else cp -P -p "$ENTRY" "$bak"; fi
-  mv -f "$tmp" "$ENTRY"
+  if [ "$elf" = 1 ]; then ln "$ENTRY" "$bak"; else cp -P -p "$ENTRY" "$bak"; fi
+  mv -f "$tmp" "$ENTRY"   # one atomic rename: the entry is the old program or the locked script, never missing
   echo "locked: $ENTRY (backup $bak)" ;;
 remove)
   bak="$ENTRY.pre-cli-lock"
   [ -e "$bak" ] || [ -L "$bak" ] || { echo "no backup at $bak"; exit 1; }
-  rm -f "$ENTRY"; mv -f "$bak" "$ENTRY"; echo "restored: $ENTRY" ;;
+  mv -f "$bak" "$ENTRY"   # one atomic rename back (no window without an entry)
+  rm -rf "$(dirname "$ENTRY")/.cli-lock-real"
+  echo "restored: $ENTRY" ;;
 *) echo "usage: cli-lock.sh install | check | remove" >&2; exit 22 ;;
 esac
