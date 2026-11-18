@@ -7,6 +7,14 @@ R="$(cd "$(dirname "$0")/.." && pwd)"; fails=0
 bad() { echo "FAIL: $*"; fails=$((fails+1)); }; ok() { echo "ok:   $*"; }
 python3 -I "$R/vault-gate-match.py" --test "$R/tests/match-fixtures.txt" | tail -1 | grep -q '^0 failure' && ok "matcher fixtures" || bad "matcher fixtures"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; mkdir -p "$T/bin" "$T/run"; chmod 700 "$T/run"
+# A stub keyring FIRST on every test PATH: it stores nothing and finds nothing, so no test can reach the real keyring
+# (katana has /usr/bin/secret-tool: without this, the gate's stale-token test and vault-login's login test would read,
+# replace or clear JP's real cached session token; Oracle 2026-11-17).
+NOKEYRING='#!/bin/sh
+echo "$1" >> "${STUB_KEYRING_LOG:-/dev/null}"
+case "$1" in store) cat >/dev/null; exit 1 ;; lookup) exit 1 ;; clear) exit 0 ;; esac
+exit 1'
+printf '%s\n' "$NOKEYRING" > "$T/bin/secret-tool"; chmod +x "$T/bin/secret-tool"
 cat > "$T/bin/loginctl" <<'S'
 #!/bin/sh
 case "$1" in list-sessions) printf '1 1000 jp - 2439  manager - no -\n4 1000 jp - 7983  user    - no -\n';;
@@ -86,13 +94,64 @@ out=$(run env); rc=$?
   && ok "LANE_HOST=1 in the host's config: refused even with a CLI present" || bad "lane host: rc=$rc out=$out"
 rm -f "$T/.config/vault-gate/config"
 # the PATH wrapper says the same and exits 2, instead of exec'ing a CLI that is not there (HOME=$T has none)
-out=$(HOME="$T" bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
+out=$(PATH="$T/bin:$PATH" HOME="$T" bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
 [ $rc -eq 2 ] && grep -q "no vault on this host" <<<"$out" && ok "wrapper on a host with no CLI: exit 2, says why" || bad "wrapper no CLI: rc=$rc out=$out"
 mkdir -p "$T/.npm-global/bin"; printf '#!/bin/sh\necho real-cli-ran\n' > "$T/.npm-global/bin/bw"; chmod +x "$T/.npm-global/bin/bw"
-out=$(HOME="$T" BW_SESSION=x bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
+out=$(PATH="$T/bin:$PATH" HOME="$T" BW_SESSION=x bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
 [ $rc -eq 0 ] && [ "$out" = real-cli-ran ] && ok "wrapper with a CLI present: execs it" || bad "wrapper with CLI: rc=$rc out=$out"
 printf 'LANE_HOST=1\n' > "$T/.config/vault-gate/config"
-out=$(HOME="$T" BW_SESSION=x bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
+out=$(PATH="$T/bin:$PATH" HOME="$T" BW_SESSION=x bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
 [ $rc -eq 2 ] && [[ "$out" != *real-cli-ran* ]] && ok "wrapper on a LANE_HOST=1 host: exit 2 even with a CLI" || bad "wrapper lane: rc=$rc out=$out"
 rm -rf "$T/.npm-global" "$T/.config/vault-gate/config"
+# vault-login.sh (Sen's re-login tool): public repo, so no account or server inside it; lane hosts refuse; status
+# FIRST (the real CLI refuses `config server` while logged in: bw.js "Logout required before server config update");
+# the token goes through the gate's token lock with a keyring read-back (a stale entry is cleared)
+mkdir -p "$T/vl/bin" "$T/vl/.npm-global/bin" "$T/vl/.config/vault-gate" "$T/vl/run"; chmod 700 "$T/vl/run"
+printf '#!/bin/sh\nexit 0\n' > "$T/vl/bin/sleep"
+printf '%s\n' "$NOKEYRING" > "$T/vl/bin/secret-tool"; chmod +x "$T/vl/bin/secret-tool"
+cat > "$T/vl/.npm-global/bin/bw" <<'S'
+#!/bin/sh
+echo "$1 session=${BW_SESSION:+set}" >> "$HOME/cli.log"
+case "$1" in
+  status) if [ "${BW_SESSION:-}" = tok-login-1 ]; then echo '{"status":"unlocked"}'; else echo "{\"status\":\"${FAKE_STATUS:-locked}\"}"; fi ;;
+  config) [ "${FAKE_STATUS:-locked}" = unauthenticated ] || { echo "Logout required before server config update." >&2; exit 1; } ;;
+  login) echo tok-login-1 ;;
+  sync) [ "${BW_SESSION:-}" = tok-login-1 ] || exit 1 ;;
+esac
+S
+chmod +x "$T/vl/bin/sleep" "$T/vl/.npm-global/bin/bw"
+vl() { HOME="$T/vl" XDG_RUNTIME_DIR="$T/vl/run" PATH="$T/vl/bin:$PATH" "$@" bash "$R/vault-login.sh" 2>&1; }
+! grep -qiE 'jphein|jphe\.in|@[a-z0-9.-]+\.(com|in|org)' "$R/vault-login.sh" && ok "vault-login.sh names no account or server (public repo)" || bad "vault-login.sh carries an account or server"
+: > "$T/vl/cli.log"; out=$(vl env); rc=$?; [ $rc -eq 2 ] && grep -q "set VAULT_EMAIL and VAULT_SERVER" <<<"$out" && [ ! -s "$T/vl/cli.log" ] && ok "vault-login with no account configured: exit 2, the CLI untouched" || bad "vl unset: rc=$rc out=$out"
+printf 'VAULT_EMAIL=someone@example.org\nVAULT_SERVER=https://vault.example.org\nLANE_HOST=1\n' > "$T/vl/.config/vault-gate/config"
+: > "$T/vl/cli.log"; out=$(vl env); rc=$?; [ $rc -eq 2 ] && grep -q "no vault on this host" <<<"$out" && [ ! -s "$T/vl/cli.log" ] && ok "vault-login on a lane host: exit 2, the CLI untouched" || bad "vl lane: rc=$rc out=$out"
+sed -i '/^LANE_HOST=1$/d' "$T/vl/.config/vault-gate/config"
+: > "$T/vl/cli.log"; out=$(vl env FAKE_STATUS=locked); rc=$?
+[ $rc -eq 0 ] && grep -q "not unauthenticated: use the normal unlock window" <<<"$out" && ! grep -qE '^(config|login)' "$T/vl/cli.log" \
+  && ok "vault-login on a merely locked vault: status first, no config, no login (the real CLI refuses config while logged in)" || bad "vl locked: rc=$rc out=$out log=$(tr '\n' ' ' < "$T/vl/cli.log")"
+chmod 755 "$T/vl/run"; out=$(vl env FAKE_STATUS=unauthenticated); rc=$?; chmod 700 "$T/vl/run"
+[ $rc -eq 2 ] && grep -q "not a private (0700, mine) runtime dir" <<<"$out" && ok "vault-login refuses a runtime dir that is not 0700" || bad "vl 0700: rc=$rc out=$out"
+# the login path with the stub keyring (stores nothing): the read-back fails, so the token lands in a 0600 file;
+# verify and sync run WITH the new session
+rm -f "$T/vl/run/bw-session-token"; : > "$T/vl/cli.log"
+out=$(PATH="$T/vl/bin:/usr/bin:/bin" vl env FAKE_STATUS=unauthenticated PATH="$T/vl/bin:/usr/bin:/bin"); rc=$?
+[ $rc -eq 0 ] && [ "$(cat "$T/vl/run/bw-session-token" 2>/dev/null)" = tok-login-1 ] && [ "$(stat -c %a "$T/vl/run/bw-session-token")" = 600 ] \
+  && grep -q '^sync session=set' "$T/vl/cli.log" && grep -q 'Vault status now: unlocked' <<<"$out" && grep -q '^synced' <<<"$out" \
+  && ok "vault-login path: token in a 0600 file, verified unlocked, synced with the new session" || bad "vl login: rc=$rc out=$out log=$(tr '\n' ' ' < "$T/vl/cli.log")"
+# keyring present but the store fails while a STALE token is there: the stale entry is cleared and the file holds the new one
+cat > "$T/vl/bin/secret-tool" <<'S'
+#!/bin/sh
+echo "$1" >> "$HOME/st.log"
+case "$1" in store) cat >/dev/null; exit 1 ;; lookup) echo old-token-before-logout ;; clear) exit 0 ;; esac
+S
+chmod +x "$T/vl/bin/secret-tool"; rm -f "$T/vl/run/bw-session-token" "$T/vl/st.log"
+out=$(vl env FAKE_STATUS=unauthenticated); rc=$?
+[ $rc -eq 0 ] && grep -q '^clear' "$T/vl/st.log" && [ "$(cat "$T/vl/run/bw-session-token" 2>/dev/null)" = tok-login-1 ] && grep -q 'token cached: file' <<<"$out" \
+  && ok "vault-login: a failed keyring store with a stale entry clears it and falls back to the file" || bad "vl stale keyring: rc=$rc out=$out st=$(tr '\n' ' ' < "$T/vl/st.log" 2>/dev/null)"
+printf '%s\n' "$NOKEYRING" > "$T/vl/bin/secret-tool"; chmod +x "$T/vl/bin/secret-tool"   # back to the refusing stub
+# guard: no test reached a real secret-tool (every call above went to a stub)
+rm -f "$T/vl/run/bw-session-token" "$T/kr.log"
+out=$(vl env FAKE_STATUS=unauthenticated STUB_KEYRING_LOG="$T/kr.log"); rc=$?
+[ $rc -eq 0 ] && [ "$(sort -u "$T/kr.log" 2>/dev/null | tr '\n' ' ')" = "clear lookup store " ] \
+  && ok "positive control: vault-login's keyring calls (store, lookup, clear) all reached the stub, never the real keyring" || bad "keyring stub not used: rc=$rc log=$(tr '\n' ' ' < "$T/kr.log" 2>/dev/null)"
 echo "$fails failure(s)"; [ "$fails" -eq 0 ]
