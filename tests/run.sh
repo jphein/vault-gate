@@ -154,40 +154,63 @@ rm -f "$T/vl/run/bw-session-token" "$T/kr.log"
 out=$(vl env FAKE_STATUS=unauthenticated STUB_KEYRING_LOG="$T/kr.log"); rc=$?
 [ $rc -eq 0 ] && [ "$(sort -u "$T/kr.log" 2>/dev/null | tr '\n' ' ')" = "clear lookup store " ] \
   && ok "positive control: vault-login's keyring calls (store, lookup, clear) all reached the stub, never the real keyring" || bad "keyring stub not used: rc=$rc log=$(tr '\n' ' ' < "$T/kr.log" 2>/dev/null)"
-# cli-lock.sh + check-cli-state.sh (row 89ba0555): one vault CLI process at a time; the wiped state is a fail line
-CL="$T/cl"; mkdir -p "$CL/bin" "$CL/run" "$CL/checks" "$CL/data"; chmod 700 "$CL/run"
-# a fake CLI entry shaped like familiar's wrapper: a shebang, then the exec; the "CLI" logs start/end around a 1 s run
-printf '#!/bin/sh\n# Wrapper: pinned node\necho "start $$" >> "%s/order.log"; sleep 1; echo "end $$" >> "%s/order.log"\n' "$CL" "$CL" > "$CL/bin/cli"
-chmod +x "$CL/bin/cli"
+# cli-lock.sh + check-cli-state.sh (row 89ba0555): one vault CLI process at a time; a wiped state is refused and loud
+CL="$T/cl"; mkdir -p "$CL/bin" "$CL/run" "$CL/checks" "$CL/data" "$CL/home/.local/bin"; chmod 700 "$CL/run"
+printf '#!/bin/sh\necho "$*" >> "%s/raven.log"\n' "$CL" > "$CL/home/.local/bin/raven"; chmod +x "$CL/home/.local/bin/raven"
+# a fake CLI entry shaped like familiar's wrapper: a shebang, then the program; it logs start/end around a 1 s run
+mkentry() { rm -f "$CL/bin/cli"; printf '#!/bin/sh\n# Wrapper: pinned node\necho "start $$" >> "%s/order.log"; sleep 1; echo "end $$" >> "%s/order.log"\n' "$CL" "$CL" > "$CL/bin/cli"; chmod +x "$CL/bin/cli"; }
+mkentry
+E() { HOME="$CL/home" BITWARDENCLI_APPDATA_DIR="$CL/data" XDG_RUNTIME_DIR="$CL/run" "$@"; }
 cl() { VAULT_CLI_ENTRY="$CL/bin/cli" XDG_RUNTIME_DIR="$CL/run" bash "$R/cli-lock.sh" "$@"; }
-interleaved() { : > "$CL/order.log"; XDG_RUNTIME_DIR="$CL/run" "$CL/bin/cli" & XDG_RUNTIME_DIR="$CL/run" "$CL/bin/cli" & wait
+interleaved() { : > "$CL/order.log"; E "$CL/bin/cli" x & E "$CL/bin/cli" x & wait
   [ "$(cut -d' ' -f1 "$CL/order.log" | tr '\n' ' ')" != "start end start end " ]; }
 cl check >/dev/null; r0=$?; interleaved; il0=$?
 [ $r0 = 1 ] && [ $il0 = 0 ] && ok "control: an unwrapped entry reads UNLOCKED and two concurrent runs interleave" || bad "control: check=$r0 interleaved-rc=$il0"
 cl install >/dev/null && cl check >/dev/null; r1=$?; interleaved; il1=$?
-[ $r1 = 0 ] && [ $il1 = 1 ] && [ -f "$CL/bin/cli.pre-cli-lock" ] && ok "install: the wrapper is locked, two concurrent runs serialize (start end start end), a backup is kept" || bad "install: check=$r1 order=$(tr '\n' ' ' < "$CL/order.log")"
+[ $r1 = 0 ] && [ $il1 = 1 ] && [ -f "$CL/bin/cli.pre-cli-lock" ] && ok "install: the wrapper is locked, two concurrent runs serialize, a backup is kept" || bad "install: check=$r1 order=$(tr '\n' ' ' < "$CL/order.log")"
 sum1=$(sha256sum < "$CL/bin/cli"); cl install >/dev/null; [ "$(sha256sum < "$CL/bin/cli")" = "$sum1" ] && ok "install twice: unchanged (idempotent)" || bad "install not idempotent"
-# a held lock times out with 75 and says why
 ( exec 9>>"$CL/run/vault-cli.lock"; flock 9; sleep 3 ) & hp=$!; sleep 0.3
-out=$(VAULT_CLI_LOCK_WAIT=1 XDG_RUNTIME_DIR="$CL/run" "$CL/bin/cli" 2>&1); rc=$?; wait $hp
+out=$(VAULT_CLI_LOCK_WAIT=1 E "$CL/bin/cli" x 2>&1); rc=$?; wait $hp
 [ $rc = 75 ] && grep -q "vault CLI busy" <<<"$out" && ok "a lock held past VAULT_CLI_LOCK_WAIT: exit 75, says why" || bad "lock wait: rc=$rc out=$out"
-# interactive unlock/login never wait on the lock (a person at a password prompt would stall every caller)
 ( exec 9>>"$CL/run/vault-cli.lock"; flock 9; sleep 3 ) & hp=$!; sleep 0.3
-s0=$(date +%s); VAULT_CLI_LOCK_WAIT=2 XDG_RUNTIME_DIR="$CL/run" "$CL/bin/cli" unlock >/dev/null 2>&1; rcu=$?; s1=$(date +%s); wait $hp
+s0=$(date +%s); VAULT_CLI_LOCK_WAIT=2 E "$CL/bin/cli" unlock >/dev/null 2>&1; rcu=$?; s1=$(date +%s); wait $hp
 [ $rcu = 0 ] && [ $((s1 - s0)) -le 1 ] && ok "unlock runs at once while another CLI holds the lock (no wait)" || bad "unlock waited: rc=$rcu took $((s1 - s0)) s"
+# the stub guard (Sen 21:35): a wiped data.json refuses everything but the recovery set, and mails the lead ONCE
+printf '{"stateVersion":67}' > "$CL/data/data.json"; : > "$CL/raven.log"; : > "$CL/order.log"
+out=$(E "$CL/bin/cli" get item 2>&1); rc=$?; out2=$(E "$CL/bin/cli" list items 2>&1); rc2=$?
+[ $rc = 76 ] && [ $rc2 = 76 ] && grep -q "state is WIPED" <<<"$out" && [ ! -s "$CL/order.log" ] && [ "$(grep -c 'state WIPED' "$CL/raven.log")" = 1 ] \
+  && ok "stub guard: get/list on a wiped state exit 76 without running the CLI; the lead is mailed once" || bad "stub guard: rc=$rc/$rc2 ran=$(wc -l < "$CL/order.log") mails=$(grep -c . "$CL/raven.log") out=$out"
+: > "$CL/order.log"; E "$CL/bin/cli" login >/dev/null 2>&1; E "$CL/bin/cli" status >/dev/null 2>&1
+[ "$(grep -c '^start' "$CL/order.log")" = 2 ] && ok "stub guard: login and status still run on a wiped state (the recovery set)" || bad "stub recovery: $(tr '\n' ' ' < "$CL/order.log")"
+printf '{"stateVersion":67,"global_account_activeAccountId":"x"}' > "$CL/data/data.json"; E "$CL/bin/cli" get item >/dev/null 2>&1
+[ ! -e "$CL/run/vault-cli-stub.told" ] && ok "stub guard: a healthy state clears the told-stamp (the next wipe mails again)" || bad "stub stamp not cleared"
 cl remove >/dev/null && cl check >/dev/null; [ $? = 1 ] && ! grep -q 'cli-lock' "$CL/bin/cli" && ok "remove: the original entry is back" || bad "remove failed"
-# npm's symlink shape: replaced by a script that execs node on the symlink's target
-printf 'console.log("node-cli " + process.argv.slice(2).join(" "))\n' > "$CL/target.js"; rm -f "$CL/bin/cli"; ln -s ../target.js "$CL/bin/cli"
+# npm's symlink shape; the Oracle's sequence: a SECOND install after the entry became a plain script must never write
+# through the first install's backup symlink into the CLI's own code
 if command -v node >/dev/null; then
-  cl install >/dev/null; out=$(XDG_RUNTIME_DIR="$CL/run" "$CL/bin/cli" status 2>&1)
-  cl check >/dev/null && [ "$out" = "node-cli status" ] && [ -L "$CL/bin/cli.pre-cli-lock" ] && ok "install on npm's symlink: a locked script that runs node on the target (args kept), the link kept as backup" || bad "symlink install: out=$out"
+  odd="$CL/odd dir 'q' é"; mkdir -p "$odd"; printf 'console.log("node-cli " + process.argv.slice(2).join(" "))\n' > "$odd/cli.js"
+  js_sum=$(sha256sum < "$odd/cli.js"); rm -f "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock"; ln -s "$odd/cli.js" "$CL/bin/cli"
+  LC_ALL=C cl install >/dev/null; out=$(E "$CL/bin/cli" status 2>&1)
+  cl check >/dev/null && [ "$out" = "node-cli status" ] && [ -L "$CL/bin/cli.pre-cli-lock" ] && head -1 "$CL/bin/cli" | grep -q '^#!/bin/sh' \
+    && ok "install on npm's symlink to an odd path (space, quote, é; LC_ALL=C): a /bin/sh script that runs node on it" || bad "symlink install: out=$out"
+  mkentry; cl install >/dev/null; [ "$(sha256sum < "$odd/cli.js")" = "$js_sum" ] && [ ! -L "$CL/bin/cli.pre-cli-lock" ] \
+    && ok "a second install over a backup symlink replaces the backup, never writes through it (the CLI's code untouched)" || bad "second install damaged the CLI's code"
+  printf 'echo hi\n' > "$CL/tool.sh"; rm -f "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock"; ln -s "$CL/tool.sh" "$CL/bin/cli"
+  cl install >/dev/null 2>&1; [ $? = 1 ] && [ -L "$CL/bin/cli" ] && ok "a symlink to a non-.js target is refused, nothing changed" || bad "non-js symlink accepted"
+else
+  bad "node is not on PATH: the symlink cases cannot run (never a silent skip)"
 fi
-# CHECK vault-cli-state: the wiped stub → fail; a state + locked entry → ok; unlocked → warn; no CLI → no line
-cs() { VAULT_CLI_ENTRY="$CL/bin/cli" VAULT_CLI_DATA="$CL/data/data.json" CHECKS_DIR="$CL/checks" bash "$R/check-cli-state.sh" >/dev/null 2>&1; cat "$CL/checks/vault-cli-state.line" 2>/dev/null; }
-printf '{"stateVersion":67}' > "$CL/data/data.json"; l=$(cs)
-[[ "$l" == "CHECK vault-cli-state fail · "*"state was wiped"* ]] && ok "CHECK: data.json with only stateVersion → fail (wiped)" || bad "CHECK stub: $l"
-printf '{"stateVersion":67,"global_account_accounts":{},"user_x":{}}' > "$CL/data/data.json"; l=$(cs)
-[[ "$l" == "CHECK vault-cli-state ok · "* ]] && ok "CHECK: a logged-in state and a locked entry → ok" || bad "CHECK ok: $l"
-cl remove >/dev/null; l=$(cs); [[ "$l" == "CHECK vault-cli-state warn · "*"not locked"* ]] && ok "CHECK: an unlocked entry → warn" || bad "CHECK unlocked: $l"
-rm -f "$CL/bin/cli" "$CL/checks/vault-cli-state.line"; l=$(cs); [ -z "$l" ] && ok "CHECK: no CLI on this host (a lane host) → no line" || bad "CHECK no CLI: $l"
+# CHECK vault-cli-state: under the same lock; wiped/out/unreadable fail, in+locked ok, in+unlocked warn, busy warn
+rm -f "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock"; mkentry; cl install >/dev/null
+cs() { VAULT_CLI_ENTRY="$CL/bin/cli" VAULT_CLI_DATA="$CL/data/data.json" CHECKS_DIR="$CL/checks" XDG_RUNTIME_DIR="$CL/run" "$@" bash "$R/check-cli-state.sh" >/dev/null 2>&1; cat "$CL/checks/vault-cli-state.line" 2>/dev/null; }
+printf '{"stateVersion":67}' > "$CL/data/data.json"; l=$(cs env)
+[[ "$l" == "CHECK vault-cli-state fail · "*"state was wiped"* ]] && ok "CHECK: stateVersion-only → fail (wiped)" || bad "CHECK stub: $l"
+printf '{"stateVersion":67,"global_environment_x":{}}' > "$CL/data/data.json"; l=$(cs env)
+[[ "$l" == "CHECK vault-cli-state fail · "*"no active account"* ]] && ok "CHECK: keys but no active account → fail (logged out), never ok" || bad "CHECK out: $l"
+printf '{"stateVersion":67,"global_account_activeAccountId":"x"}' > "$CL/data/data.json"; l=$(cs env)
+[[ "$l" == "CHECK vault-cli-state ok · "* ]] && ! grep -q '"x"\|· x' <<<"$l" && ok "CHECK: an active account + locked entry → ok (no value printed)" || bad "CHECK ok: $l"
+( exec 9>>"$CL/run/vault-cli.lock"; flock 9; sleep 3 ) & hp=$!; sleep 0.3; l=$(cs env CHECK_LOCK_WAIT=1); wait $hp
+[[ "$l" == "CHECK vault-cli-state warn · "*"held the host lock"* ]] && ok "CHECK: reads only under the lock (busy → warn, never a false fail)" || bad "CHECK busy: $l"
+cl remove >/dev/null; l=$(cs env); [[ "$l" == "CHECK vault-cli-state warn · "*"not locked"* ]] && ok "CHECK: an unlocked entry → warn" || bad "CHECK unlocked: $l"
+rm -f "$CL/bin/cli" "$CL/checks/vault-cli-state.line"; l=$(cs env); [ -z "$l" ] && ok "CHECK: no CLI on this host (a lane host) → no line" || bad "CHECK no CLI: $l"
 echo "$fails failure(s)"; [ "$fails" -eq 0 ]

@@ -47,12 +47,23 @@ tail "$XDG_RUNTIME_DIR/vault-gate.log"  # verify hook fired
   it writes `{}`, and the migrations leave `{"stateVersion":N}`: the CLI is logged out with no logout anywhere.
   lowdb 1.0.0's `FileSync` writes with a non-atomic `writeFileSync`, so a CLI starting while another one writes can read
   half a file. It happened on familiar 2026-11-07 13:14:59 and 2026-11-17 20:31:13 (load 32, six timers at once).
-- **`cli-lock.sh install`** wraps `~/.npm-global/bin/bw`, the one path every caller runs, with a host-wide `flock`
-  (`$XDG_RUNTIME_DIR/vault-cli.lock`, wait 120 s, then exit 75). Interactive `unlock` and `login` skip the lock: a
-  person at a password prompt would stall every other caller. An `npm` update replaces the entry, and the CHECK says so.
-- **CHECK vault-cli-state** (`check-cli-state.sh`, `systemd/vault-cli-state.timer`, every 15 min): **fail** when
-  data.json holds only `stateVersion` (wiped: re-login with `vault-login.sh`), **warn** when the entry is not locked.
-  It reads key names only, never a value. A host without the CLI writes no line.
+  Upstream: bitwarden/clients#2735 (open since 2021: "not logged in" and a corrupt cache during scripted bulk use).
+- **`cli-lock.sh install`** wraps `~/.npm-global/bin/bw`, the one path every caller runs:
+  1. a host-wide `flock` (`$XDG_RUNTIME_DIR/vault-cli.lock`, wait 120 s, then exit 75). Interactive `unlock` and
+     `login` skip it: a person at a password prompt would stall every other caller. **Known limit:** they still read
+     data.json when they start and write it when they finish, so a locked call at either moment can race them.
+  2. a **stub guard** (Sen 2026-11-17): on a stateVersion-only data.json, every command except `login`, `config`,
+     `status`, `--version` and `help` exits 76, and the lead is mailed once per wipe. A stub is never used silently.
+
+  A second install never writes through an old backup (it may be a symlink to the CLI's own code). A symlink target
+  must be a `.js` file; paths are POSIX single-quoted. An `npm` update replaces the entry, and the CHECK says so.
+- **CHECK vault-cli-state** (`check-cli-state.sh`, `systemd/vault-cli-state.timer`, every 15 min) reads data.json
+  under the same lock:
+  - **fail** when it holds only `stateVersion` (wiped), has no active account, or is unreadable; re-login with
+    `vault-login.sh`;
+  - **warn** when the entry is not locked, or the lock was busy past 30 s.
+
+  It reads key names and the presence of the active account id, never a value. A host without the CLI writes no line.
 - Deploy order on a vault host: `cli-lock.sh install`, then link and enable the timer. Never during a re-login.
 
 ## Don't
