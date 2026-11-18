@@ -75,14 +75,22 @@ install)
     # at <dir>/.cli-lock-real/<name> (same filesystem, no second copy), which the locking script execs, so argv[0]'s
     # basename and the bytes are unchanged (xreview 2026-11-17: a binary may select behaviour by its name). The backup
     # is a second hard link, and one atomic rename puts the script over the entry: the entry never goes missing.
-    # Only a build whose behaviour cannot depend on its directory (xreview r2): no $ORIGIN (RUNPATH/RPATH or any
-    # executable-relative library path) anywhere in it, and no executable-relative data dir (the CLI's own "bw-data"
-    # beside the binary wins over every other data location). Measured on wakizashi's 2026.9.1: neither.
-    grep -q -a '\$ORIGIN' "$ENTRY" && { echo "$ENTRY names \$ORIGIN (executable-relative libraries): refusing to move it"; exit 1; }
+    # Directory independence cannot be proven for an arbitrary binary (xreview r3: /proc/self/exe-relative files, the
+    # ${ORIGIN} spelling). So a native build is wrapped ONLY when its exact sha256 is listed in VAULT_CLI_ELF_OK, after a
+    # person verified that build: no RPATH/RUNPATH, only system libraries, no file beside it that it reads relative to
+    # itself (wakizashi's 2026.9.1, 2026-11-17: readelf -d shows six NEEDED system libs and no RPATH/RUNPATH; no bw-data).
+    # The two cheap checks below stay as a second line.
+    sha=$(sha256sum < "$ENTRY" | cut -d' ' -f1)
+    case " ${VAULT_CLI_ELF_OK:-} " in *" $sha "*) ;; *) echo "$ENTRY is a native build (sha256 $sha) not listed in VAULT_CLI_ELF_OK: verify it (readelf -d: no RPATH/RUNPATH; nothing it reads beside itself), then list its sha256"; exit 1 ;; esac
+    grep -q -a -E '\$(ORIGIN|\{ORIGIN\})' "$ENTRY" && { echo "$ENTRY names \$ORIGIN (executable-relative libraries): refusing to move it"; exit 1; }
     [ -e "$(dirname "$ENTRY")/${C}-data" ] && { echo "a ${C}-data dir sits beside $ENTRY (the CLI reads it relative to itself): refusing to move it"; exit 1; }
     elf=1; real="$(dirname "$ENTRY")/.cli-lock-real/$(basename "$ENTRY")"
-    mkdir -p "$(dirname "$real")"; rm -f "$real"
-    ln "$ENTRY" "$real" || { rm -f "$tmp"; echo "cannot hard-link $ENTRY to $real: nothing changed"; exit 1; }
+    mkdir -p "$(dirname "$real")"
+    # published atomically: a wrapper already waiting on the lock execs the old inode or the new, never a missing path
+    # (already the same inode after a remove + re-install of the same build: nothing to publish; mv refuses that rename)
+    if ! [ "$real" -ef "$ENTRY" ]; then
+      ln "$ENTRY" "$real.new.$$" && mv -f "$real.new.$$" "$real" || { rm -f "$tmp" "$real.new.$$"; echo "cannot hard-link $ENTRY to $real: nothing changed"; exit 1; }
+    fi
     { printf '#!/bin/sh\n%s\n%s\n' "$MARK" "$LINES"; printf 'exec %s "$@"\n' "$(sq "$real")"; } > "$tmp"
   else
     head -1 "$ENTRY" | grep -q '^#!' || { echo "$ENTRY is neither a script with a shebang nor a native binary: refusing to edit it"; exit 1; }

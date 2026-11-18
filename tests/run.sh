@@ -208,32 +208,46 @@ if command -v node >/dev/null; then
   printf 'echo hi\n' > "$CL/tool.sh"; rm -f "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock"; ln -s "$CL/tool.sh" "$CL/bin/cli"
   cl install >/dev/null 2>&1; [ $? = 1 ] && [ -L "$CL/bin/cli" ] && ok "a symlink to a non-.js target is refused, nothing changed" || bad "non-js symlink accepted"
   # the native standalone build (wakizashi): a real ELF (perl; asserted ELF below) stays reachable under its OWN name
-  # via a hard link in .cli-lock-real/, the backup is a second hard link, and the entry is never missing
-  rm -rf "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock" "$CL/bin/.cli-lock-real"; cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; elf_sum=$(sha256sum < "$CL/bin/cli")
+  # via a hard link in .cli-lock-real/, the backup is a second hard link, and the entry is never missing. A native build
+  # is wrapped only when its sha256 is listed in VAULT_CLI_ELF_OK (xreview r3: directory independence is verified per
+  # build by a person, never assumed)
+  hexof() { sha256sum < "$1" | cut -d' ' -f1; }
+  rm -rf "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock" "$CL/bin/.cli-lock-real"; cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; elf_sum=$(sha256sum < "$CL/bin/cli"); elf_hex=$(hexof "$CL/bin/cli")
   [ "$(head -c 4 "$CL/bin/cli" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ] && ok "fixture: the stand-in CLI is a real ELF (the ELF branch runs, not the shebang one)" || bad "fixture is not an ELF"
-  cl install >/dev/null; out=$(E "$CL/bin/cli" -e 'print "@ARGV|" . $^X' hello elf 2>&1)
+  out=$(cl install 2>&1); rc=$?
+  [ $rc = 1 ] && grep -q 'not listed in VAULT_CLI_ELF_OK' <<<"$out" && [ "$(sha256sum < "$CL/bin/cli")" = "$elf_sum" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] \
+    && ok "a native build whose sha256 is not in VAULT_CLI_ELF_OK is refused, unchanged" || bad "unlisted elf: rc=$rc out=$out"
+  VAULT_CLI_ELF_OK="0000 $elf_hex" cl install >/dev/null; out=$(E "$CL/bin/cli" -e 'print "@ARGV|" . $^X' hello elf 2>&1)
   cl check >/dev/null && [ "${out%%|*}" = "hello elf" ] && [ "${out##*/}" = cli ] && [ "$(stat -c %h "$CL/bin/.cli-lock-real/cli")" = 2 ] \
     && [ "$(sha256sum < "$CL/bin/cli.pre-cli-lock")" = "$elf_sum" ] && head -1 "$CL/bin/cli" | grep -q '^#!/bin/sh' \
-    && ok "install on a native binary: it runs under its own name (argv basename 'cli'), args kept; real + backup are one inode (no copy)" || bad "elf install: out=$out"
+    && ok "install on a listed native binary: it runs under its own name (argv basename 'cli'), args kept; real + backup are one inode (no copy)" || bad "elf install: out=$out"
   ( exec 9>>"$CL/run/vault-cli.lock"; flock 9; sleep 3 ) & hp=$!; sleep 0.3
   out=$(VAULT_CLI_LOCK_WAIT=1 E "$CL/bin/cli" x 2>&1); rc=$?; wait $hp
   [ $rc = 75 ] && ok "the native binary's entry waits on the host lock like the others" || bad "elf lock: rc=$rc out=$out"
   # an interrupted state (entry gone, backup there) is never a silent "nothing to wrap": install says to run remove
   mv "$CL/bin/cli" "$CL/bin/cli.moved"; out=$(cl install 2>&1); rc=$?; mv "$CL/bin/cli.moved" "$CL/bin/cli"
   [ $rc = 1 ] && grep -q "run cli-lock.sh remove" <<<"$out" && ok "a missing entry with a backup present: install says to run remove (no silent nothing-to-wrap)" || bad "interrupted: rc=$rc out=$out"
-  # xreview r2: a wrapper already waiting on the lock when remove runs still runs the CLI afterwards
-  ( exec 9>>"$CL/run/vault-cli.lock"; flock 9; sleep 2 ) & hp=$!; sleep 0.3
+  # xreview r2+r3: a wrapper already waiting on the lock while remove, a NEW build landing (an update), and a re-install
+  # run still runs a CLI afterwards (the real path is published by one rename, never unlinked first)
+  ( exec 9>>"$CL/run/vault-cli.lock"; flock 9; sleep 1.5 ) & hp=$!; sleep 0.3
   E "$CL/bin/cli" -e 'print "inflight-ran"' > "$CL/inflight.out" 2>&1 & ip=$!; sleep 0.3
-  cl remove >/dev/null; wait $hp; wait $ip
-  [ "$(sha256sum < "$CL/bin/cli")" = "$elf_sum" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ "$(cat "$CL/inflight.out")" = inflight-ran ] \
-    && ok "remove on a native binary: the binary is back byte-identical, and a wrapper waiting on the lock during remove still ran" || bad "elf remove: inflight=$(cat "$CL/inflight.out")"
-  # xreview r2: a build that names \$ORIGIN, or has the CLI's bw-data beside it, is refused (its behaviour depends on its dir)
-  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; printf 'RUNPATH=$ORIGIN/lib' >> "$CL/bin/cli"; sum_o=$(sha256sum < "$CL/bin/cli")
-  out=$(cl install 2>&1); rc=$?
-  [ $rc = 1 ] && grep -q 'ORIGIN' <<<"$out" && [ "$(sha256sum < "$CL/bin/cli")" = "$sum_o" ] && ok "an ELF that names \$ORIGIN is refused, unchanged" || bad "origin: rc=$rc out=$out"
+  cl remove >/dev/null; cp "$CL/bin/cli" "$CL/bin/cli.upd"; mv -f "$CL/bin/cli.upd" "$CL/bin/cli"   # same bytes, a new inode
+  VAULT_CLI_ELF_OK="$elf_hex" cl install >/dev/null; r_inst=$?; wait $hp; wait $ip
+  [ "$(cat "$CL/inflight.out")" = inflight-ran ] && [ $r_inst = 0 ] && cl check >/dev/null && [ "$CL/bin/.cli-lock-real/cli" -ef "$CL/bin/cli.pre-cli-lock" ] \
+    && ok "a wrapper waiting on the lock through remove + an update + re-install still ran; the new build is the published one" || bad "inflight: install=$r_inst out=$(cat "$CL/inflight.out")"
+  cl remove >/dev/null; VAULT_CLI_ELF_OK="$elf_hex" cl install >/dev/null && cl check >/dev/null \
+    && ok "remove + re-install of the SAME build (same inode already published) succeeds" || bad "same-build reinstall failed"
+  cl remove >/dev/null; [ "$(sha256sum < "$CL/bin/cli")" = "$elf_sum" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] \
+    && ok "remove on a native binary: the binary is back byte-identical" || bad "elf remove"
+  # second line: even a LISTED build that names $ORIGIN or ${ORIGIN}, or has the CLI's bw-data beside it, is refused
+  for tok in '$ORIGIN' '${ORIGIN}'; do
+    cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; printf 'RUNPATH=%s/lib' "$tok" >> "$CL/bin/cli"; sum_o=$(sha256sum < "$CL/bin/cli")
+    out=$(VAULT_CLI_ELF_OK="$(hexof "$CL/bin/cli")" cl install 2>&1); rc=$?
+    [ $rc = 1 ] && grep -q 'ORIGIN' <<<"$out" && [ "$(sha256sum < "$CL/bin/cli")" = "$sum_o" ] && ok "a listed ELF that names $tok is still refused, unchanged" || bad "origin $tok: rc=$rc out=$out"
+  done
   cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; mkdir -p "$CL/bin/bw-data"
-  out=$(cl install 2>&1); rc=$?; rmdir "$CL/bin/bw-data"
-  [ $rc = 1 ] && grep -q 'data dir sits beside' <<<"$out" && ok "an ELF with the CLI's bw-data beside it is refused" || bad "bw-data: rc=$rc out=$out"
+  out=$(VAULT_CLI_ELF_OK="$elf_hex" cl install 2>&1); rc=$?; rmdir "$CL/bin/bw-data"
+  [ $rc = 1 ] && grep -q 'data dir sits beside' <<<"$out" && ok "a listed ELF with the CLI's bw-data beside it is still refused" || bad "bw-data: rc=$rc out=$out"
 else
   bad "node is not on PATH: the symlink cases cannot run (never a silent skip)"
 fi
