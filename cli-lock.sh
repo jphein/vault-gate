@@ -36,9 +36,12 @@ esac
 if [ -f "$__vd/data.json" ] && python3 -I -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if list(d)==[\"stateVersion\"] else 1)" "$__vd/data.json" 2>/dev/null; then
   case "${1:-}" in
     login|config|status|--version|-v|help|--help|"") ;;
-    *) echo "vault CLI state is WIPED (data.json holds only stateVersion: logged out, the lowdb race): refusing \"$1\". Re-login with vault-login.sh in a window JP'"'"'s hands are on." >&2
+    *) __a=$(printf %s "${1%%=*}" | tr -cd "a-z-" | cut -c1-24)   # never echo an argument value (--session=…)
+       echo "vault CLI state is WIPED (data.json holds only stateVersion: logged out, the lowdb race): refusing \"$__a\". Re-login with vault-login.sh in a window JP'"'"'s hands are on." >&2
+       exec 9>&-   # this call is refused: release the host lock before anything slow
        if [ ! -e "$__rt/vault-cli-stub.told" ]; then
-         "$HOME/.local/bin/raven" send --as "agent-$(hostname -s)" sen "vault CLI on $(hostname -s): state WIPED (stateVersion-only data.json); a \"$1\" was refused. Re-login needed (vault-login.sh)." >/dev/null 2>&1 && : > "$__rt/vault-cli-stub.told"
+         # the mail never holds the host lock (fd 9 closed above and for it) and never hangs (10 s)
+         timeout 10 "$HOME/.local/bin/raven" send --as "agent-$(hostname -s)" sen "vault CLI on $(hostname -s): state WIPED (stateVersion-only data.json); a \"$__a\" was refused. Re-login needed (vault-login.sh)." >/dev/null 2>&1 9>&- && : > "$__rt/vault-cli-stub.told"
        fi
        exit 76 ;;
   esac

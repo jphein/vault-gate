@@ -182,6 +182,16 @@ out=$(E "$CL/bin/cli" get item 2>&1); rc=$?; out2=$(E "$CL/bin/cli" list items 2
   && ok "stub guard: get/list on a wiped state exit 76 without running the CLI; the lead is mailed once" || bad "stub guard: rc=$rc/$rc2 ran=$(wc -l < "$CL/order.log") mails=$(grep -c . "$CL/raven.log") out=$out"
 : > "$CL/order.log"; E "$CL/bin/cli" login >/dev/null 2>&1; E "$CL/bin/cli" status >/dev/null 2>&1
 [ "$(grep -c '^start' "$CL/order.log")" = 2 ] && ok "stub guard: login and status still run on a wiped state (the recovery set)" || bad "stub recovery: $(tr '\n' ' ' < "$CL/order.log")"
+# (Oracle r2) an argument value never reaches stderr or the mail; the mail never holds the host lock
+rm -f "$CL/run/vault-cli-stub.told"; : > "$CL/raven.log"
+out=$(E "$CL/bin/cli" --session=FAKE-TOKEN-123 list items 2>&1)
+! grep -q 'FAKE-TOKEN' <<<"$out" && ! grep -q 'FAKE-TOKEN' "$CL/raven.log" && grep -q 'refusing "--session"' <<<"$out" \
+  && ok "stub guard: an argument's value (--session=…) never reaches stderr or the lead's mail" || bad "arg leak: out=$out mail=$(cat "$CL/raven.log")"
+printf '#!/bin/sh\nsleep 3\necho "$*" >> "%s/raven.log"\n' "$CL" > "$CL/home/.local/bin/raven"; rm -f "$CL/run/vault-cli-stub.told"
+E "$CL/bin/cli" get item >/dev/null 2>&1 & gp=$!; sleep 0.5
+s0=$(date +%s); E "$CL/bin/cli" status >/dev/null 2>&1; s1=$(date +%s); wait $gp
+[ $((s1 - s0)) -le 1 ] && ok "stub guard: the lead's mail runs without the host lock (a concurrent status did not wait on it)" || bad "mail held the lock: status waited $((s1 - s0)) s"
+printf '#!/bin/sh\necho "$*" >> "%s/raven.log"\n' "$CL" > "$CL/home/.local/bin/raven"
 printf '{"stateVersion":67,"global_account_activeAccountId":"x"}' > "$CL/data/data.json"; E "$CL/bin/cli" get item >/dev/null 2>&1
 [ ! -e "$CL/run/vault-cli-stub.told" ] && ok "stub guard: a healthy state clears the told-stamp (the next wipe mails again)" || bad "stub stamp not cleared"
 cl remove >/dev/null && cl check >/dev/null; [ $? = 1 ] && ! grep -q 'cli-lock' "$CL/bin/cli" && ok "remove: the original entry is back" || bad "remove failed"
