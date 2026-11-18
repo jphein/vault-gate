@@ -14,6 +14,16 @@ set -e
 
 REAL_BW="$HOME/.npm-global/bin/bw"
 
+# Lane hosts never unlock the vault (Sen 2026-11-17; the same rule as vault-gate.sh): no CLI here, or this host's own
+# config says LANE_HOST=1 → say so and stop, instead of exec'ing a missing program
+LANE_HOST=0
+# shellcheck source=/dev/null
+[ -f "$HOME/.config/vault-gate/config" ] && . "$HOME/.config/vault-gate/config"
+if [ "$LANE_HOST" = 1 ] || [ ! -x "$REAL_BW" ]; then
+    echo "no vault on this host ($(hostname)): lane hosts never unlock the vault; a secret reaches them only as a 0600 file the lead places." >&2
+    exit 2
+fi
+
 if [ -z "${BW_SESSION:-}" ]; then
     CONFIG_FILE="$HOME/.config/vault-gate/config"
     STORAGE="keyring"

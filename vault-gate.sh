@@ -37,6 +37,15 @@ STORAGE="keyring"
 # shellcheck source=/dev/null
 [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
 
+# Lane hosts never unlock the vault (Sen 2026-11-17): a secret reaches a lane host only as a 0600 file the lead places.
+# A host with no vault CLI, or whose own (unsynced) config says LANE_HOST=1, refuses at once: no window, no card.
+# (serialhub 19:06: no CLI, a local unlock window ran, its script failed, and this gate said "too many wrong passwords".)
+if [ "${LANE_HOST:-0}" = 1 ] || [ ! -x "$BW" ]; then
+    echo "BLOCKED: no vault on this host ($(hostname): $([ "${LANE_HOST:-0}" = 1 ] && echo "LANE_HOST=1 in $CONFIG_FILE" || echo "$BW is not installed")). Lane hosts never unlock the vault; a secret reaches them only as a 0600 file the lead places. Ask the lead." >&2
+    { echo "[$(date -Iseconds)] refused: no vault on this host"; } >> "$LOG" 2>/dev/null || true
+    exit 2
+fi
+
 # Fallback to file if secret-tool is unavailable
 if [ "$STORAGE" = "keyring" ] && ! command -v secret-tool >/dev/null 2>&1; then
     echo "VAULT: secret-tool not found, falling back to file storage." >&2
