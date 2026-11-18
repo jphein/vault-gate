@@ -285,6 +285,11 @@ if command -v node >/dev/null; then
   [ $rc = 1 ] && grep -qE "cannot write the backup|Is a directory" <<<"$out" && [ "$(hexof "$CL/bin/cli")" = "$listed" ] && [ -z "$(ls -A "$CL/bin/cli.pre-cli-lock")" ] \
     && ok "a directory planted at the backup path: install fails, the entry unchanged" || bad "backup dir: rc=$rc out=$out"
   rmdir "$CL/bin/cli.pre-cli-lock"; rm -rf "$CL/bin/.cli-lock-real"
+  # xreview r9: remove recovers an install interrupted after the backup link (entry and backup are one inode)
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; listed=$(hexof "$CL/bin/cli"); ln -T "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock"
+  out=$(cl remove 2>&1); rc=$?
+  [ $rc = 0 ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ "$(hexof "$CL/bin/cli")" = "$listed" ] && [ "$(stat -c %h "$CL/bin/cli")" = 1 ] \
+    && ok "remove after an install interrupted at the backup link: the extra link goes, the program stays" || bad "interrupted remove: rc=$rc out=$out"
   # second line: even a LISTED build that names $ORIGIN or ${ORIGIN}, or has the CLI's bw-data beside it, is refused
   for tok in '$ORIGIN' '${ORIGIN}'; do
     cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; printf 'RUNPATH=%s/lib' "$tok" >> "$CL/bin/cli"; sum_o=$(sha256sum < "$CL/bin/cli")

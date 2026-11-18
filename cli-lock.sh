@@ -119,6 +119,11 @@ install)
 remove)
   bak="$ENTRY.pre-cli-lock"
   [ -e "$bak" ] || [ -L "$bak" ] || { echo "no backup at $bak"; exit 1; }
+  # an install interrupted after the backup link but before the wrapper rename leaves entry and backup ONE inode
+  # (xreview r9): the entry is already the original program, so only the extra link goes (mv -T refuses that rename)
+  if [ -f "$ENTRY" ] && [ ! -L "$ENTRY" ] && [ -f "$bak" ] && [ ! -L "$bak" ] && [ "$ENTRY" -ef "$bak" ]; then
+    rm -f "$bak"; echo "already restored: $ENTRY (an interrupted install's extra link removed)"; exit 0
+  fi
   mv -fT "$bak" "$ENTRY"   # one atomic rename back (no window without an entry)
   # .cli-lock-real/<name> (a native build's hard link) is LEFT in place: a wrapper already waiting on the lock will
   # exec it after this returns (xreview r2). It shares the binary's inode, so it costs no space; the next install
