@@ -250,6 +250,12 @@ if command -v node >/dev/null; then
     && ok "an entry replaced right after the candidate: the LISTED build is published and backed up, never the replacement; no temp links left" \
     || bad "race: real=$(hexof "$CL/bin/.cli-lock-real/cli" | cut -c1-8) bak=$(hexof "$CL/bin/cli.pre-cli-lock" 2>/dev/null | cut -c1-8) listed=${listed:0:8} unlisted=${unl:0:8}"
   cl remove >/dev/null 2>&1; rm -rf "$CL/bin/.cli-lock-real"
+  # xreview r5: an entry swapped for a SYMLINK (to a listed ELF) right before the candidate is refused, nothing changed
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; cp "$CL/bin/cli" "$CL/listed.elf"; listed=$(hexof "$CL/listed.elf")
+  out=$(CLI_LOCK_TEST_BEFORE_CANDIDATE="ln -sfn '$CL/listed.elf' '$CL/bin/cli.s' && mv -fT '$CL/bin/cli.s' '$CL/bin/cli'" VAULT_CLI_ELF_OK="$listed" cl install 2>&1); rc=$?
+  [ $rc = 1 ] && grep -q "changed into a symlink" <<<"$out" && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ -z "$(ls -A "$CL/bin/.cli-lock-real" 2>/dev/null | grep -vx cli)" ] \
+    && ok "an entry swapped for a symlink right before the candidate: refused, nothing published or backed up" || bad "symlink swap: rc=$rc out=$out"
+  rm -f "$CL/bin/cli"; rm -rf "$CL/bin/.cli-lock-real"
   # second line: even a LISTED build that names $ORIGIN or ${ORIGIN}, or has the CLI's bw-data beside it, is refused
   for tok in '$ORIGIN' '${ORIGIN}'; do
     cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; printf 'RUNPATH=%s/lib' "$tok" >> "$CL/bin/cli"; sum_o=$(sha256sum < "$CL/bin/cli")

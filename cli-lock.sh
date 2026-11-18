@@ -86,8 +86,12 @@ install)
     # Not covered: a writer modifying the candidate's inode IN PLACE (the CLI's updates replace the file).
     elf=1; real="$(dirname "$ENTRY")/.cli-lock-real/$(basename "$ENTRY")"; cand="$real.cand.$$"
     mkdir -p "$(dirname "$real")"
-    ln "$ENTRY" "$cand" || { rm -f "$tmp"; echo "cannot hard-link $ENTRY: nothing changed"; exit 1; }
+    [ -n "${CLI_LOCK_TEST_BEFORE_CANDIDATE:-}" ] && sh -c "$CLI_LOCK_TEST_BEFORE_CANDIDATE"   # a test seam only
+    ln -P "$ENTRY" "$cand" || { rm -f "$tmp"; echo "cannot hard-link $ENTRY: nothing changed"; exit 1; }
     trap 'rm -f "$cand" "$real.new.$$"' EXIT
+    # the candidate must BE the executable's inode (xreview r5): an entry swapped for a symlink before the link would
+    # leave a hard link to the symlink, whose target could change after the hash
+    { [ -f "$cand" ] && [ ! -L "$cand" ]; } || { rm -f "$tmp"; echo "$ENTRY changed into a symlink or a non-regular file during install: nothing changed"; exit 1; }
     [ -n "${CLI_LOCK_TEST_AFTER_CANDIDATE:-}" ] && sh -c "$CLI_LOCK_TEST_AFTER_CANDIDATE"   # a test seam only
     sha=$(sha256sum < "$cand" | cut -d' ' -f1)
     case " ${VAULT_CLI_ELF_OK:-} " in *" $sha "*) ;; *) rm -f "$tmp"; echo "$ENTRY is a native build (sha256 $sha) not listed in VAULT_CLI_ELF_OK: verify it (readelf -d: no RPATH/RUNPATH; nothing it reads beside itself), then list its sha256"; exit 1 ;; esac
