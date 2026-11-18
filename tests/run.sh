@@ -95,4 +95,16 @@ printf 'LANE_HOST=1\n' > "$T/.config/vault-gate/config"
 out=$(HOME="$T" BW_SESSION=x bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
 [ $rc -eq 2 ] && [[ "$out" != *real-cli-ran* ]] && ok "wrapper on a LANE_HOST=1 host: exit 2 even with a CLI" || bad "wrapper lane: rc=$rc out=$out"
 rm -rf "$T/.npm-global" "$T/.config/vault-gate/config"
+# vault-login.sh (Sen's re-login tool): public repo, so no account or server inside it; lane hosts refuse
+mkdir -p "$T/vl/bin" "$T/vl/.npm-global/bin" "$T/vl/.config/vault-gate" "$T/vl/run"; chmod 700 "$T/vl/run"
+printf '#!/bin/sh\nexit 0\n' > "$T/vl/bin/sleep"
+printf '#!/bin/sh\necho "$*" >> "$HOME/cli.log"\ncase "$1" in status) echo "{\\"status\\":\\"${FAKE_STATUS:-locked}\\"}";; esac\n' > "$T/vl/.npm-global/bin/bw"
+chmod +x "$T/vl/bin/sleep" "$T/vl/.npm-global/bin/bw"
+vl() { HOME="$T/vl" XDG_RUNTIME_DIR="$T/vl/run" PATH="$T/vl/bin:$PATH" "$@" bash "$R/vault-login.sh" 2>&1; }
+! grep -qiE 'jphein|jphe\.in|@[a-z0-9.-]+\.(com|in|org)' "$R/vault-login.sh" && ok "vault-login.sh names no account or server (public repo)" || bad "vault-login.sh carries an account or server"
+out=$(vl env); rc=$?; [ $rc -eq 2 ] && grep -q "set VAULT_EMAIL and VAULT_SERVER" <<<"$out" && [ ! -s "$T/vl/cli.log" ] && ok "vault-login with no account configured: exit 2, the CLI untouched" || bad "vl unset: rc=$rc out=$out"
+printf 'VAULT_EMAIL=someone@example.org\nVAULT_SERVER=https://vault.example.org\nLANE_HOST=1\n' > "$T/vl/.config/vault-gate/config"
+out=$(vl env); rc=$?; [ $rc -eq 2 ] && grep -q "no vault on this host" <<<"$out" && [ ! -s "$T/vl/cli.log" ] && ok "vault-login on a lane host: exit 2, the CLI untouched" || bad "vl lane: rc=$rc out=$out"
+sed -i '/^LANE_HOST=1$/d' "$T/vl/.config/vault-gate/config"
+out=$(vl env FAKE_STATUS=locked); rc=$?; [ $rc -eq 0 ] && grep -q "not unauthenticated: use the normal unlock window" <<<"$out" && ! grep -q '^login' "$T/vl/cli.log" && ok "vault-login on a merely locked vault: no login, points to the unlock window" || bad "vl locked: rc=$rc out=$out log=$(cat "$T/vl/cli.log" 2>/dev/null)"
 echo "$fails failure(s)"; [ "$fails" -eq 0 ]
