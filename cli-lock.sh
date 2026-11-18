@@ -75,6 +75,11 @@ install)
     # at <dir>/.cli-lock-real/<name> (same filesystem, no second copy), which the locking script execs, so argv[0]'s
     # basename and the bytes are unchanged (xreview 2026-11-17: a binary may select behaviour by its name). The backup
     # is a second hard link, and one atomic rename puts the script over the entry: the entry never goes missing.
+    # Only a build whose behaviour cannot depend on its directory (xreview r2): no $ORIGIN (RUNPATH/RPATH or any
+    # executable-relative library path) anywhere in it, and no executable-relative data dir (the CLI's own "bw-data"
+    # beside the binary wins over every other data location). Measured on wakizashi's 2026.9.1: neither.
+    grep -q -a '\$ORIGIN' "$ENTRY" && { echo "$ENTRY names \$ORIGIN (executable-relative libraries): refusing to move it"; exit 1; }
+    [ -e "$(dirname "$ENTRY")/${C}-data" ] && { echo "a ${C}-data dir sits beside $ENTRY (the CLI reads it relative to itself): refusing to move it"; exit 1; }
     elf=1; real="$(dirname "$ENTRY")/.cli-lock-real/$(basename "$ENTRY")"
     mkdir -p "$(dirname "$real")"; rm -f "$real"
     ln "$ENTRY" "$real" || { rm -f "$tmp"; echo "cannot hard-link $ENTRY to $real: nothing changed"; exit 1; }
@@ -93,7 +98,9 @@ remove)
   bak="$ENTRY.pre-cli-lock"
   [ -e "$bak" ] || [ -L "$bak" ] || { echo "no backup at $bak"; exit 1; }
   mv -f "$bak" "$ENTRY"   # one atomic rename back (no window without an entry)
-  rm -rf "$(dirname "$ENTRY")/.cli-lock-real"
+  # .cli-lock-real/<name> (a native build's hard link) is LEFT in place: a wrapper already waiting on the lock will
+  # exec it after this returns (xreview r2). It shares the binary's inode, so it costs no space; the next install
+  # replaces it.
   echo "restored: $ENTRY" ;;
 *) echo "usage: cli-lock.sh install | check | remove" >&2; exit 22 ;;
 esac

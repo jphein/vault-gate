@@ -221,8 +221,19 @@ if command -v node >/dev/null; then
   # an interrupted state (entry gone, backup there) is never a silent "nothing to wrap": install says to run remove
   mv "$CL/bin/cli" "$CL/bin/cli.moved"; out=$(cl install 2>&1); rc=$?; mv "$CL/bin/cli.moved" "$CL/bin/cli"
   [ $rc = 1 ] && grep -q "run cli-lock.sh remove" <<<"$out" && ok "a missing entry with a backup present: install says to run remove (no silent nothing-to-wrap)" || bad "interrupted: rc=$rc out=$out"
-  cl remove >/dev/null; [ "$(sha256sum < "$CL/bin/cli")" = "$elf_sum" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ ! -e "$CL/bin/.cli-lock-real" ] \
-    && ok "remove on a native binary: the binary is back byte-identical, the hard links gone" || bad "elf remove"
+  # xreview r2: a wrapper already waiting on the lock when remove runs still runs the CLI afterwards
+  ( exec 9>>"$CL/run/vault-cli.lock"; flock 9; sleep 2 ) & hp=$!; sleep 0.3
+  E "$CL/bin/cli" -e 'print "inflight-ran"' > "$CL/inflight.out" 2>&1 & ip=$!; sleep 0.3
+  cl remove >/dev/null; wait $hp; wait $ip
+  [ "$(sha256sum < "$CL/bin/cli")" = "$elf_sum" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ "$(cat "$CL/inflight.out")" = inflight-ran ] \
+    && ok "remove on a native binary: the binary is back byte-identical, and a wrapper waiting on the lock during remove still ran" || bad "elf remove: inflight=$(cat "$CL/inflight.out")"
+  # xreview r2: a build that names \$ORIGIN, or has the CLI's bw-data beside it, is refused (its behaviour depends on its dir)
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; printf 'RUNPATH=$ORIGIN/lib' >> "$CL/bin/cli"; sum_o=$(sha256sum < "$CL/bin/cli")
+  out=$(cl install 2>&1); rc=$?
+  [ $rc = 1 ] && grep -q 'ORIGIN' <<<"$out" && [ "$(sha256sum < "$CL/bin/cli")" = "$sum_o" ] && ok "an ELF that names \$ORIGIN is refused, unchanged" || bad "origin: rc=$rc out=$out"
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; mkdir -p "$CL/bin/bw-data"
+  out=$(cl install 2>&1); rc=$?; rmdir "$CL/bin/bw-data"
+  [ $rc = 1 ] && grep -q 'data dir sits beside' <<<"$out" && ok "an ELF with the CLI's bw-data beside it is refused" || bad "bw-data: rc=$rc out=$out"
 else
   bad "node is not on PATH: the symlink cases cannot run (never a silent skip)"
 fi
