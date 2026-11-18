@@ -88,7 +88,7 @@ install)
     [ -L "$(dirname "$real")" ] && { rm -f "$tmp"; echo "$(dirname "$real") is a symlink: refusing to publish through it"; exit 1; }
     mkdir -p "$(dirname "$real")"
     [ -n "${CLI_LOCK_TEST_BEFORE_CANDIDATE:-}" ] && sh -c "$CLI_LOCK_TEST_BEFORE_CANDIDATE"   # a test seam only
-    ln -P "$ENTRY" "$cand" || { rm -f "$tmp"; echo "cannot hard-link $ENTRY: nothing changed"; exit 1; }
+    ln -PT "$ENTRY" "$cand" || { rm -f "$tmp"; echo "cannot hard-link $ENTRY: nothing changed"; exit 1; }
     trap 'rm -f "$cand" "$real.new.$$"' EXIT
     # the candidate must BE the executable's inode (xreview r5): an entry swapped for a symlink before the link would
     # leave a hard link to the symlink, whose target could change after the hash
@@ -103,7 +103,7 @@ install)
     # skipped ONLY when $real is itself a regular, non-symlink file on the candidate's inode (xreview r6: a planted
     # symlink back to $ENTRY passes -ef, and the wrapper would then exec itself); anything else is replaced by a rename
     if ! { [ -f "$real" ] && [ ! -L "$real" ] && [ "$real" -ef "$cand" ]; }; then
-      ln "$cand" "$real.new.$$" && mv -fT "$real.new.$$" "$real" || { rm -f "$tmp"; echo "cannot hard-link the build to $real: nothing changed"; exit 1; }
+      ln -T "$cand" "$real.new.$$" && mv -fT "$real.new.$$" "$real" || { rm -f "$tmp"; echo "cannot hard-link the build to $real: nothing changed"; exit 1; }
     fi
     { printf '#!/bin/sh\n%s\n%s\n' "$MARK" "$LINES"; printf 'exec %s "$@"\n' "$(sq "$real")"; } > "$tmp"
   else
@@ -113,7 +113,7 @@ install)
   chmod 755 "$tmp"; sh -n "$tmp" || { rm -f "$tmp"; echo "the wrapped entry does not parse: nothing changed"; exit 1; }
   # the backup is replaced, never written THROUGH: an old backup may be a symlink to the CLI's own code
   rm -f "$bak"
-  if [ "$elf" = 1 ]; then ln "$cand" "$bak"; else cp -P -p "$ENTRY" "$bak"; fi
+  if [ "$elf" = 1 ]; then ln -T "$cand" "$bak"; else cp -P -p -T "$ENTRY" "$bak"; fi || { rm -f "$tmp"; echo "cannot write the backup $bak: nothing changed"; exit 1; }
   mv -fT "$tmp" "$ENTRY"   # one atomic rename: the entry is the old program or the locked script, never missing
   echo "locked: $ENTRY (backup $bak)" ;;
 remove)

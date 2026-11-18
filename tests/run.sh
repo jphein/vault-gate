@@ -273,6 +273,18 @@ if command -v node >/dev/null; then
   [ $rc = 1 ] && [ "$(hexof "$CL/bin/cli")" = "$listed" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ -z "$(ls -A "$CL/bin/.cli-lock-real/cli")" ] \
     && ok "a directory planted at the published path: install fails, the entry and the directory unchanged" || bad "planted dir: rc=$rc out=$out"
   rm -rf "$CL/bin/.cli-lock-real"
+  # xreview r8: a directory planted at the STAGING path (cli.new.<pid>) makes install fail too (ln -T), nothing published
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; listed=$(hexof "$CL/bin/cli"); rm -rf "$CL/bin/.cli-lock-real"
+  out=$(CLI_LOCK_TEST_AFTER_CANDIDATE='mkdir "$(dirname "$0")/x" 2>/dev/null; mkdir "'"$CL"'/bin/.cli-lock-real/cli.new.$PPID"' VAULT_CLI_ELF_OK="$listed" cl install 2>&1); rc=$?
+  [ $rc = 1 ] && [ "$(hexof "$CL/bin/cli")" = "$listed" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ ! -e "$CL/bin/.cli-lock-real/cli" ] \
+    && ok "a directory planted at the staging path: install fails, the entry unchanged, nothing published or backed up" || bad "staging dir: rc=$rc out=$out real=$(ls -la "$CL/bin/.cli-lock-real" 2>&1 | tail -2 | tr '\n' ' ')"
+  rm -rf "$CL/bin/.cli-lock-real"
+  # a directory planted at the BACKUP path: install fails before the entry is replaced (never a wrapper without a backup)
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; listed=$(hexof "$CL/bin/cli"); mkdir -p "$CL/bin/cli.pre-cli-lock"
+  out=$(VAULT_CLI_ELF_OK="$listed" cl install 2>&1); rc=$?
+  [ $rc = 1 ] && grep -qE "cannot write the backup|Is a directory" <<<"$out" && [ "$(hexof "$CL/bin/cli")" = "$listed" ] && [ -z "$(ls -A "$CL/bin/cli.pre-cli-lock")" ] \
+    && ok "a directory planted at the backup path: install fails, the entry unchanged" || bad "backup dir: rc=$rc out=$out"
+  rmdir "$CL/bin/cli.pre-cli-lock"; rm -rf "$CL/bin/.cli-lock-real"
   # second line: even a LISTED build that names $ORIGIN or ${ORIGIN}, or has the CLI's bw-data beside it, is refused
   for tok in '$ORIGIN' '${ORIGIN}'; do
     cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; printf 'RUNPATH=%s/lib' "$tok" >> "$CL/bin/cli"; sum_o=$(sha256sum < "$CL/bin/cli")
