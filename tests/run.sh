@@ -256,6 +256,17 @@ if command -v node >/dev/null; then
   [ $rc = 1 ] && grep -q "changed into a symlink" <<<"$out" && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ -z "$(ls -A "$CL/bin/.cli-lock-real" 2>/dev/null | grep -vx cli)" ] \
     && ok "an entry swapped for a symlink right before the candidate: refused, nothing published or backed up" || bad "symlink swap: rc=$rc out=$out"
   rm -f "$CL/bin/cli"; rm -rf "$CL/bin/.cli-lock-real"
+  # xreview r6: a planted symlink at the published path (back to the entry) is replaced by the real build, never kept
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; listed=$(hexof "$CL/bin/cli"); mkdir -p "$CL/bin/.cli-lock-real"
+  ln -s ../cli "$CL/bin/.cli-lock-real/cli"
+  VAULT_CLI_ELF_OK="$listed" cl install >/dev/null 2>&1; out=$(E timeout 10 "$CL/bin/cli" -e 'print "ran-real"' 2>&1)   # bounded: a self-exec loop must FAIL, not hang
+  [ ! -L "$CL/bin/.cli-lock-real/cli" ] && [ "$(hexof "$CL/bin/.cli-lock-real/cli")" = "$listed" ] && [ "$out" = ran-real ] \
+    && ok "a planted symlink at the published path is replaced by the listed build (the wrapper runs the CLI, never itself)" || bad "planted real symlink: out=$out"
+  cl remove >/dev/null 2>&1; rm -rf "$CL/bin/.cli-lock-real"
+  # and a .cli-lock-real that is itself a symlink is refused
+  mkdir -p "$CL/elsewhere"; ln -s "$CL/elsewhere" "$CL/bin/.cli-lock-real"
+  out=$(VAULT_CLI_ELF_OK="$listed" cl install 2>&1); rc=$?; rm -f "$CL/bin/.cli-lock-real"
+  [ $rc = 1 ] && grep -q "is a symlink: refusing" <<<"$out" && [ -z "$(ls -A "$CL/elsewhere")" ] && ok "a .cli-lock-real dir that is a symlink is refused, nothing written through it" || bad "dir symlink: rc=$rc out=$out"
   # second line: even a LISTED build that names $ORIGIN or ${ORIGIN}, or has the CLI's bw-data beside it, is refused
   for tok in '$ORIGIN' '${ORIGIN}'; do
     cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; printf 'RUNPATH=%s/lib' "$tok" >> "$CL/bin/cli"; sum_o=$(sha256sum < "$CL/bin/cli")

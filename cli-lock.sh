@@ -85,6 +85,7 @@ install)
     # an unlisted build wrapped (that update is undone by the final rename: run install again after an update).
     # Not covered: a writer modifying the candidate's inode IN PLACE (the CLI's updates replace the file).
     elf=1; real="$(dirname "$ENTRY")/.cli-lock-real/$(basename "$ENTRY")"; cand="$real.cand.$$"
+    [ -L "$(dirname "$real")" ] && { rm -f "$tmp"; echo "$(dirname "$real") is a symlink: refusing to publish through it"; exit 1; }
     mkdir -p "$(dirname "$real")"
     [ -n "${CLI_LOCK_TEST_BEFORE_CANDIDATE:-}" ] && sh -c "$CLI_LOCK_TEST_BEFORE_CANDIDATE"   # a test seam only
     ln -P "$ENTRY" "$cand" || { rm -f "$tmp"; echo "cannot hard-link $ENTRY: nothing changed"; exit 1; }
@@ -99,7 +100,9 @@ install)
     [ -e "$(dirname "$ENTRY")/${C}-data" ] && { rm -f "$tmp"; echo "a ${C}-data dir sits beside $ENTRY (the CLI reads it relative to itself): refusing to move it"; exit 1; }
     # published atomically: a wrapper already waiting on the lock execs the old inode or the new, never a missing path
     # (already the same inode after a remove + re-install of the same build: nothing to publish; mv refuses that rename)
-    if ! [ "$real" -ef "$cand" ]; then
+    # skipped ONLY when $real is itself a regular, non-symlink file on the candidate's inode (xreview r6: a planted
+    # symlink back to $ENTRY passes -ef, and the wrapper would then exec itself); anything else is replaced by a rename
+    if ! { [ -f "$real" ] && [ ! -L "$real" ] && [ "$real" -ef "$cand" ]; }; then
       ln "$cand" "$real.new.$$" && mv -f "$real.new.$$" "$real" || { rm -f "$tmp"; echo "cannot hard-link the build to $real: nothing changed"; exit 1; }
     fi
     { printf '#!/bin/sh\n%s\n%s\n' "$MARK" "$LINES"; printf 'exec %s "$@"\n' "$(sq "$real")"; } > "$tmp"
