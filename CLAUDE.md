@@ -40,6 +40,21 @@ tail "$XDG_RUNTIME_DIR/vault-gate.log"  # verify hook fired
   implementation: realm-cloud `bootstrap/bw_retry.py` (#229). Not yet proven on a real locked vault: the next reboot is
   the proof (ubox0 HANDOFF 2026-11-14).
 
+## One vault CLI process at a time (`cli-lock.sh`, CHECK vault-cli-state; row 89ba0555)
+
+- **The race (read from CLI 2026.6.0's source map):** `lowdb-storage.service.ts` takes its file lock at :70 only around
+  `new FileSync(path)`. It parses data.json at :76 (`lowdb(adapter)`) **outside** that lock. On a `SyntaxError` (:78–93)
+  it writes `{}`, and the migrations leave `{"stateVersion":N}`: the CLI is logged out with no logout anywhere.
+  lowdb 1.0.0's `FileSync` writes with a non-atomic `writeFileSync`, so a CLI starting while another one writes can read
+  half a file. It happened on familiar 2026-11-07 13:14:59 and 2026-11-17 20:31:13 (load 32, six timers at once).
+- **`cli-lock.sh install`** wraps `~/.npm-global/bin/bw`, the one path every caller runs, with a host-wide `flock`
+  (`$XDG_RUNTIME_DIR/vault-cli.lock`, wait 120 s, then exit 75). Interactive `unlock` and `login` skip the lock: a
+  person at a password prompt would stall every other caller. An `npm` update replaces the entry, and the CHECK says so.
+- **CHECK vault-cli-state** (`check-cli-state.sh`, `systemd/vault-cli-state.timer`, every 15 min): **fail** when
+  data.json holds only `stateVersion` (wiped: re-login with `vault-login.sh`), **warn** when the entry is not locked.
+  It reads key names only, never a value. A host without the CLI writes no line.
+- Deploy order on a vault host: `cli-lock.sh install`, then link and enable the timer. Never during a re-login.
+
 ## Don't
 
 - Don't reach into `~/.claude/settings.local.json` outside of `install.sh` / `uninstall.sh`. Manual JSON fiddling is how hooks drift.

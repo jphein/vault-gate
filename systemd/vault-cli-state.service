@@ -1,0 +1,8 @@
+[Unit]
+Description=CHECK vault-cli-state: the vault CLI's state was not wiped, and its entry holds the host lock (row 89ba0555)
+
+[Service]
+Type=oneshot
+# the repo checkout this unit is installed from; check-cli-state.sh writes ~/.local/state/checks/vault-cli-state.line
+ExecStart=/usr/bin/bash %h/Projects/vault-gate/check-cli-state.sh
+Nice=10
