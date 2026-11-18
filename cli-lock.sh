@@ -61,19 +61,25 @@ install)
   [ -e "$ENTRY" ] || [ -L "$ENTRY" ] || { echo "no vault CLI at $ENTRY: nothing to wrap"; exit 2; }
   has_lock && { echo "already locked: $ENTRY"; exit 0; }
   grep -qF "# vault-gate cli-lock" "$ENTRY" 2>/dev/null && { echo "$ENTRY carries an older cli-lock: run remove first"; exit 1; }
-  bak="$ENTRY.pre-cli-lock"; tmp="$ENTRY.cli-lock.$$"
+  bak="$ENTRY.pre-cli-lock"; tmp="$ENTRY.cli-lock.$$"; elf=0
   if [ -L "$ENTRY" ]; then
     target=$(readlink -f "$ENTRY")
     [ -f "$target" ] || { echo "the symlink's target is missing: $target"; exit 1; }
     case "$target" in *.js) ;; *) echo "the symlink's target is not a .js file ($target): refusing to guess how to run it"; exit 1 ;; esac
     { printf '#!/bin/sh\n%s\n%s\n' "$MARK" "$LINES"; printf 'exec node %s "$@"\n' "$(sq "$target")"; } > "$tmp"
+  elif [ "$(head -c 4 "$ENTRY" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ]; then
+    # the CLI's native standalone build (wakizashi 2026.9.1, 143 MB): it MOVES to the backup path (no second copy of
+    # the binary) and the entry becomes the locking script that execs it there
+    elf=1
+    { printf '#!/bin/sh\n%s\n%s\n' "$MARK" "$LINES"; printf 'exec %s "$@"\n' "$(sq "$bak")"; } > "$tmp"
   else
-    head -1 "$ENTRY" | grep -q '^#!' || { echo "$ENTRY is not a script with a shebang: refusing to edit it"; exit 1; }
+    head -1 "$ENTRY" | grep -q '^#!' || { echo "$ENTRY is neither a script with a shebang nor a native binary: refusing to edit it"; exit 1; }
     { head -1 "$ENTRY"; printf '%s\n%s\n' "$MARK" "$LINES"; tail -n +2 "$ENTRY"; } > "$tmp"
   fi
   chmod 755 "$tmp"; sh -n "$tmp" || { rm -f "$tmp"; echo "the wrapped entry does not parse: nothing changed"; exit 1; }
   # the backup is replaced, never written THROUGH: an old backup may be a symlink to the CLI's own code
-  rm -f "$bak"; cp -P -p "$ENTRY" "$bak"
+  rm -f "$bak"
+  if [ "$elf" = 1 ]; then mv -f "$ENTRY" "$bak"; else cp -P -p "$ENTRY" "$bak"; fi
   mv -f "$tmp" "$ENTRY"
   echo "locked: $ENTRY (backup $bak)" ;;
 remove)
