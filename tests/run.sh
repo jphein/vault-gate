@@ -267,6 +267,12 @@ if command -v node >/dev/null; then
   mkdir -p "$CL/elsewhere"; ln -s "$CL/elsewhere" "$CL/bin/.cli-lock-real"
   out=$(VAULT_CLI_ELF_OK="$listed" cl install 2>&1); rc=$?; rm -f "$CL/bin/.cli-lock-real"
   [ $rc = 1 ] && grep -q "is a symlink: refusing" <<<"$out" && [ -z "$(ls -A "$CL/elsewhere")" ] && ok "a .cli-lock-real dir that is a symlink is refused, nothing written through it" || bad "dir symlink: rc=$rc out=$out"
+  # xreview r7: a DIRECTORY planted at the published path makes install fail, the entry unchanged (mv -T)
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; listed=$(hexof "$CL/bin/cli"); mkdir -p "$CL/bin/.cli-lock-real/cli"
+  out=$(VAULT_CLI_ELF_OK="$listed" cl install 2>&1); rc=$?
+  [ $rc = 1 ] && [ "$(hexof "$CL/bin/cli")" = "$listed" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ -z "$(ls -A "$CL/bin/.cli-lock-real/cli")" ] \
+    && ok "a directory planted at the published path: install fails, the entry and the directory unchanged" || bad "planted dir: rc=$rc out=$out"
+  rm -rf "$CL/bin/.cli-lock-real"
   # second line: even a LISTED build that names $ORIGIN or ${ORIGIN}, or has the CLI's bw-data beside it, is refused
   for tok in '$ORIGIN' '${ORIGIN}'; do
     cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; printf 'RUNPATH=%s/lib' "$tok" >> "$CL/bin/cli"; sum_o=$(sha256sum < "$CL/bin/cli")

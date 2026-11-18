@@ -103,7 +103,7 @@ install)
     # skipped ONLY when $real is itself a regular, non-symlink file on the candidate's inode (xreview r6: a planted
     # symlink back to $ENTRY passes -ef, and the wrapper would then exec itself); anything else is replaced by a rename
     if ! { [ -f "$real" ] && [ ! -L "$real" ] && [ "$real" -ef "$cand" ]; }; then
-      ln "$cand" "$real.new.$$" && mv -f "$real.new.$$" "$real" || { rm -f "$tmp"; echo "cannot hard-link the build to $real: nothing changed"; exit 1; }
+      ln "$cand" "$real.new.$$" && mv -fT "$real.new.$$" "$real" || { rm -f "$tmp"; echo "cannot hard-link the build to $real: nothing changed"; exit 1; }
     fi
     { printf '#!/bin/sh\n%s\n%s\n' "$MARK" "$LINES"; printf 'exec %s "$@"\n' "$(sq "$real")"; } > "$tmp"
   else
@@ -114,12 +114,12 @@ install)
   # the backup is replaced, never written THROUGH: an old backup may be a symlink to the CLI's own code
   rm -f "$bak"
   if [ "$elf" = 1 ]; then ln "$cand" "$bak"; else cp -P -p "$ENTRY" "$bak"; fi
-  mv -f "$tmp" "$ENTRY"   # one atomic rename: the entry is the old program or the locked script, never missing
+  mv -fT "$tmp" "$ENTRY"   # one atomic rename: the entry is the old program or the locked script, never missing
   echo "locked: $ENTRY (backup $bak)" ;;
 remove)
   bak="$ENTRY.pre-cli-lock"
   [ -e "$bak" ] || [ -L "$bak" ] || { echo "no backup at $bak"; exit 1; }
-  mv -f "$bak" "$ENTRY"   # one atomic rename back (no window without an entry)
+  mv -fT "$bak" "$ENTRY"   # one atomic rename back (no window without an entry)
   # .cli-lock-real/<name> (a native build's hard link) is LEFT in place: a wrapper already waiting on the lock will
   # exec it after this returns (xreview r2). It shares the binary's inode, so it costs no space; the next install
   # replaces it.
