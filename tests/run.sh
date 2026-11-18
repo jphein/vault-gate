@@ -207,6 +207,98 @@ if command -v node >/dev/null; then
     && ok "a second install over a backup symlink replaces the backup, never writes through it (the CLI's code untouched)" || bad "second install damaged the CLI's code"
   printf 'echo hi\n' > "$CL/tool.sh"; rm -f "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock"; ln -s "$CL/tool.sh" "$CL/bin/cli"
   cl install >/dev/null 2>&1; [ $? = 1 ] && [ -L "$CL/bin/cli" ] && ok "a symlink to a non-.js target is refused, nothing changed" || bad "non-js symlink accepted"
+  # the native standalone build (wakizashi): a real ELF (perl; asserted ELF below) stays reachable under its OWN name
+  # via a hard link in .cli-lock-real/, the backup is a second hard link, and the entry is never missing. A native build
+  # is wrapped only when its sha256 is listed in VAULT_CLI_ELF_OK (xreview r3: directory independence is verified per
+  # build by a person, never assumed)
+  hexof() { sha256sum < "$1" | cut -d' ' -f1; }
+  rm -rf "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock" "$CL/bin/.cli-lock-real"; cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; elf_sum=$(sha256sum < "$CL/bin/cli"); elf_hex=$(hexof "$CL/bin/cli")
+  [ "$(head -c 4 "$CL/bin/cli" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ] && ok "fixture: the stand-in CLI is a real ELF (the ELF branch runs, not the shebang one)" || bad "fixture is not an ELF"
+  out=$(cl install 2>&1); rc=$?
+  [ $rc = 1 ] && grep -q 'not listed in VAULT_CLI_ELF_OK' <<<"$out" && [ "$(sha256sum < "$CL/bin/cli")" = "$elf_sum" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] \
+    && ok "a native build whose sha256 is not in VAULT_CLI_ELF_OK is refused, unchanged" || bad "unlisted elf: rc=$rc out=$out"
+  VAULT_CLI_ELF_OK="0000 $elf_hex" cl install >/dev/null; out=$(E "$CL/bin/cli" -e 'print "@ARGV|" . $^X' hello elf 2>&1)
+  cl check >/dev/null && [ "${out%%|*}" = "hello elf" ] && [ "${out##*/}" = cli ] && [ "$(stat -c %h "$CL/bin/.cli-lock-real/cli")" = 2 ] \
+    && [ "$(sha256sum < "$CL/bin/cli.pre-cli-lock")" = "$elf_sum" ] && head -1 "$CL/bin/cli" | grep -q '^#!/bin/sh' \
+    && ok "install on a listed native binary: it runs under its own name (argv basename 'cli'), args kept; real + backup are one inode (no copy)" || bad "elf install: out=$out"
+  ( exec 9>>"$CL/run/vault-cli.lock"; flock 9; sleep 3 ) & hp=$!; sleep 0.3
+  out=$(VAULT_CLI_LOCK_WAIT=1 E "$CL/bin/cli" x 2>&1); rc=$?; wait $hp
+  [ $rc = 75 ] && ok "the native binary's entry waits on the host lock like the others" || bad "elf lock: rc=$rc out=$out"
+  # an interrupted state (entry gone, backup there) is never a silent "nothing to wrap": install says to run remove
+  mv "$CL/bin/cli" "$CL/bin/cli.moved"; out=$(cl install 2>&1); rc=$?; mv "$CL/bin/cli.moved" "$CL/bin/cli"
+  [ $rc = 1 ] && grep -q "run cli-lock.sh remove" <<<"$out" && ok "a missing entry with a backup present: install says to run remove (no silent nothing-to-wrap)" || bad "interrupted: rc=$rc out=$out"
+  # xreview r2+r3: a wrapper already waiting on the lock while remove, a NEW build landing (an update), and a re-install
+  # run still runs a CLI afterwards (the real path is published by one rename, never unlinked first)
+  ( exec 9>>"$CL/run/vault-cli.lock"; flock 9; sleep 1.5 ) & hp=$!; sleep 0.3
+  E "$CL/bin/cli" -e 'print "inflight-ran"' > "$CL/inflight.out" 2>&1 & ip=$!; sleep 0.3
+  cl remove >/dev/null; cp "$CL/bin/cli" "$CL/bin/cli.upd"; mv -f "$CL/bin/cli.upd" "$CL/bin/cli"   # same bytes, a new inode
+  VAULT_CLI_ELF_OK="$elf_hex" cl install >/dev/null; r_inst=$?; wait $hp; wait $ip
+  [ "$(cat "$CL/inflight.out")" = inflight-ran ] && [ $r_inst = 0 ] && cl check >/dev/null && [ "$CL/bin/.cli-lock-real/cli" -ef "$CL/bin/cli.pre-cli-lock" ] \
+    && ok "a wrapper waiting on the lock through remove + an update + re-install still ran; the new build is the published one" || bad "inflight: install=$r_inst out=$(cat "$CL/inflight.out")"
+  cl remove >/dev/null; VAULT_CLI_ELF_OK="$elf_hex" cl install >/dev/null && cl check >/dev/null \
+    && ok "remove + re-install of the SAME build (same inode already published) succeeds" || bad "same-build reinstall failed"
+  cl remove >/dev/null; [ "$(sha256sum < "$CL/bin/cli")" = "$elf_sum" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] \
+    && ok "remove on a native binary: the binary is back byte-identical" || bad "elf remove"
+  # xreview r4: an update REPLACING the entry between the check and the publish never gets an unlisted build wrapped:
+  # the checked candidate is what is published and backed up
+  cl remove >/dev/null 2>&1; rm -rf "$CL/bin/.cli-lock-real" "$CL/bin/cli.pre-cli-lock"
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; listed=$(hexof "$CL/bin/cli")
+  cp "$CL/bin/cli" "$CL/unlisted"; printf 'UNLISTED' >> "$CL/unlisted"; unl=$(hexof "$CL/unlisted")
+  CLI_LOCK_TEST_AFTER_CANDIDATE="cp '$CL/unlisted' '$CL/bin/cli.x' && mv -f '$CL/bin/cli.x' '$CL/bin/cli'" VAULT_CLI_ELF_OK="$listed" cl install >/dev/null 2>&1
+  [ "$(hexof "$CL/bin/.cli-lock-real/cli")" = "$listed" ] && [ "$(hexof "$CL/bin/cli.pre-cli-lock")" = "$listed" ] && cl check >/dev/null \
+    && [ -z "$(ls "$CL/bin/.cli-lock-real" | grep -E 'cand|new')" ] \
+    && ok "an entry replaced right after the candidate: the LISTED build is published and backed up, never the replacement; no temp links left" \
+    || bad "race: real=$(hexof "$CL/bin/.cli-lock-real/cli" | cut -c1-8) bak=$(hexof "$CL/bin/cli.pre-cli-lock" 2>/dev/null | cut -c1-8) listed=${listed:0:8} unlisted=${unl:0:8}"
+  cl remove >/dev/null 2>&1; rm -rf "$CL/bin/.cli-lock-real"
+  # xreview r5: an entry swapped for a SYMLINK (to a listed ELF) right before the candidate is refused, nothing changed
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; cp "$CL/bin/cli" "$CL/listed.elf"; listed=$(hexof "$CL/listed.elf")
+  out=$(CLI_LOCK_TEST_BEFORE_CANDIDATE="ln -sfn '$CL/listed.elf' '$CL/bin/cli.s' && mv -fT '$CL/bin/cli.s' '$CL/bin/cli'" VAULT_CLI_ELF_OK="$listed" cl install 2>&1); rc=$?
+  [ $rc = 1 ] && grep -q "changed into a symlink" <<<"$out" && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ -z "$(ls -A "$CL/bin/.cli-lock-real" 2>/dev/null | grep -vx cli)" ] \
+    && ok "an entry swapped for a symlink right before the candidate: refused, nothing published or backed up" || bad "symlink swap: rc=$rc out=$out"
+  rm -f "$CL/bin/cli"; rm -rf "$CL/bin/.cli-lock-real"
+  # xreview r6: a planted symlink at the published path (back to the entry) is replaced by the real build, never kept
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; listed=$(hexof "$CL/bin/cli"); mkdir -p "$CL/bin/.cli-lock-real"
+  ln -s ../cli "$CL/bin/.cli-lock-real/cli"
+  VAULT_CLI_ELF_OK="$listed" cl install >/dev/null 2>&1; out=$(E timeout 10 "$CL/bin/cli" -e 'print "ran-real"' 2>&1)   # bounded: a self-exec loop must FAIL, not hang
+  [ ! -L "$CL/bin/.cli-lock-real/cli" ] && [ "$(hexof "$CL/bin/.cli-lock-real/cli")" = "$listed" ] && [ "$out" = ran-real ] \
+    && ok "a planted symlink at the published path is replaced by the listed build (the wrapper runs the CLI, never itself)" || bad "planted real symlink: out=$out"
+  cl remove >/dev/null 2>&1; rm -rf "$CL/bin/.cli-lock-real"
+  # and a .cli-lock-real that is itself a symlink is refused
+  mkdir -p "$CL/elsewhere"; ln -s "$CL/elsewhere" "$CL/bin/.cli-lock-real"
+  out=$(VAULT_CLI_ELF_OK="$listed" cl install 2>&1); rc=$?; rm -f "$CL/bin/.cli-lock-real"
+  [ $rc = 1 ] && grep -q "is a symlink: refusing" <<<"$out" && [ -z "$(ls -A "$CL/elsewhere")" ] && ok "a .cli-lock-real dir that is a symlink is refused, nothing written through it" || bad "dir symlink: rc=$rc out=$out"
+  # xreview r7: a DIRECTORY planted at the published path makes install fail, the entry unchanged (mv -T)
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; listed=$(hexof "$CL/bin/cli"); mkdir -p "$CL/bin/.cli-lock-real/cli"
+  out=$(VAULT_CLI_ELF_OK="$listed" cl install 2>&1); rc=$?
+  [ $rc = 1 ] && [ "$(hexof "$CL/bin/cli")" = "$listed" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ -z "$(ls -A "$CL/bin/.cli-lock-real/cli")" ] \
+    && ok "a directory planted at the published path: install fails, the entry and the directory unchanged" || bad "planted dir: rc=$rc out=$out"
+  rm -rf "$CL/bin/.cli-lock-real"
+  # xreview r8: a directory planted at the STAGING path (cli.new.<pid>) makes install fail too (ln -T), nothing published
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; listed=$(hexof "$CL/bin/cli"); rm -rf "$CL/bin/.cli-lock-real"
+  out=$(CLI_LOCK_TEST_AFTER_CANDIDATE='mkdir "$(dirname "$0")/x" 2>/dev/null; mkdir "'"$CL"'/bin/.cli-lock-real/cli.new.$PPID"' VAULT_CLI_ELF_OK="$listed" cl install 2>&1); rc=$?
+  [ $rc = 1 ] && [ "$(hexof "$CL/bin/cli")" = "$listed" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ ! -e "$CL/bin/.cli-lock-real/cli" ] \
+    && ok "a directory planted at the staging path: install fails, the entry unchanged, nothing published or backed up" || bad "staging dir: rc=$rc out=$out real=$(ls -la "$CL/bin/.cli-lock-real" 2>&1 | tail -2 | tr '\n' ' ')"
+  rm -rf "$CL/bin/.cli-lock-real"
+  # a directory planted at the BACKUP path: install fails before the entry is replaced (never a wrapper without a backup)
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; listed=$(hexof "$CL/bin/cli"); mkdir -p "$CL/bin/cli.pre-cli-lock"
+  out=$(VAULT_CLI_ELF_OK="$listed" cl install 2>&1); rc=$?
+  [ $rc = 1 ] && grep -qE "cannot write the backup|Is a directory" <<<"$out" && [ "$(hexof "$CL/bin/cli")" = "$listed" ] && [ -z "$(ls -A "$CL/bin/cli.pre-cli-lock")" ] \
+    && ok "a directory planted at the backup path: install fails, the entry unchanged" || bad "backup dir: rc=$rc out=$out"
+  rmdir "$CL/bin/cli.pre-cli-lock"; rm -rf "$CL/bin/.cli-lock-real"
+  # xreview r9: remove recovers an install interrupted after the backup link (entry and backup are one inode)
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; listed=$(hexof "$CL/bin/cli"); ln -T "$CL/bin/cli" "$CL/bin/cli.pre-cli-lock"
+  out=$(cl remove 2>&1); rc=$?
+  [ $rc = 0 ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] && [ "$(hexof "$CL/bin/cli")" = "$listed" ] && [ "$(stat -c %h "$CL/bin/cli")" = 1 ] \
+    && ok "remove after an install interrupted at the backup link: the extra link goes, the program stays" || bad "interrupted remove: rc=$rc out=$out"
+  # second line: even a LISTED build that names $ORIGIN or ${ORIGIN}, or has the CLI's bw-data beside it, is refused
+  for tok in '$ORIGIN' '${ORIGIN}'; do
+    cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; printf 'RUNPATH=%s/lib' "$tok" >> "$CL/bin/cli"; sum_o=$(sha256sum < "$CL/bin/cli")
+    out=$(VAULT_CLI_ELF_OK="$(hexof "$CL/bin/cli")" cl install 2>&1); rc=$?
+    [ $rc = 1 ] && grep -q 'ORIGIN' <<<"$out" && [ "$(sha256sum < "$CL/bin/cli")" = "$sum_o" ] && ok "a listed ELF that names $tok is still refused, unchanged" || bad "origin $tok: rc=$rc out=$out"
+  done
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; mkdir -p "$CL/bin/bw-data"
+  out=$(VAULT_CLI_ELF_OK="$elf_hex" cl install 2>&1); rc=$?; rmdir "$CL/bin/bw-data"
+  [ $rc = 1 ] && grep -q 'data dir sits beside' <<<"$out" && ok "a listed ELF with the CLI's bw-data beside it is still refused" || bad "bw-data: rc=$rc out=$out"
 else
   bad "node is not on PATH: the symlink cases cannot run (never a silent skip)"
 fi
