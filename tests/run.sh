@@ -94,13 +94,13 @@ out=$(run env); rc=$?
   && ok "LANE_HOST=1 in the host's config: refused even with a CLI present" || bad "lane host: rc=$rc out=$out"
 rm -f "$T/.config/vault-gate/config"
 # the PATH wrapper says the same and exits 2, instead of exec'ing a CLI that is not there (HOME=$T has none)
-out=$(HOME="$T" bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
+out=$(PATH="$T/bin:$PATH" HOME="$T" bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
 [ $rc -eq 2 ] && grep -q "no vault on this host" <<<"$out" && ok "wrapper on a host with no CLI: exit 2, says why" || bad "wrapper no CLI: rc=$rc out=$out"
 mkdir -p "$T/.npm-global/bin"; printf '#!/bin/sh\necho real-cli-ran\n' > "$T/.npm-global/bin/bw"; chmod +x "$T/.npm-global/bin/bw"
-out=$(HOME="$T" BW_SESSION=x bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
+out=$(PATH="$T/bin:$PATH" HOME="$T" BW_SESSION=x bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
 [ $rc -eq 0 ] && [ "$out" = real-cli-ran ] && ok "wrapper with a CLI present: execs it" || bad "wrapper with CLI: rc=$rc out=$out"
 printf 'LANE_HOST=1\n' > "$T/.config/vault-gate/config"
-out=$(HOME="$T" BW_SESSION=x bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
+out=$(PATH="$T/bin:$PATH" HOME="$T" BW_SESSION=x bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
 [ $rc -eq 2 ] && [[ "$out" != *real-cli-ran* ]] && ok "wrapper on a LANE_HOST=1 host: exit 2 even with a CLI" || bad "wrapper lane: rc=$rc out=$out"
 rm -rf "$T/.npm-global" "$T/.config/vault-gate/config"
 # vault-login.sh (Sen's re-login tool): public repo, so no account or server inside it; lane hosts refuse; status
