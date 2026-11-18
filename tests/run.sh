@@ -239,6 +239,17 @@ if command -v node >/dev/null; then
     && ok "remove + re-install of the SAME build (same inode already published) succeeds" || bad "same-build reinstall failed"
   cl remove >/dev/null; [ "$(sha256sum < "$CL/bin/cli")" = "$elf_sum" ] && [ ! -e "$CL/bin/cli.pre-cli-lock" ] \
     && ok "remove on a native binary: the binary is back byte-identical" || bad "elf remove"
+  # xreview r4: an update REPLACING the entry between the check and the publish never gets an unlisted build wrapped:
+  # the checked candidate is what is published and backed up
+  cl remove >/dev/null 2>&1; rm -rf "$CL/bin/.cli-lock-real" "$CL/bin/cli.pre-cli-lock"
+  cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; listed=$(hexof "$CL/bin/cli")
+  cp "$CL/bin/cli" "$CL/unlisted"; printf 'UNLISTED' >> "$CL/unlisted"; unl=$(hexof "$CL/unlisted")
+  CLI_LOCK_TEST_AFTER_CANDIDATE="cp '$CL/unlisted' '$CL/bin/cli.x' && mv -f '$CL/bin/cli.x' '$CL/bin/cli'" VAULT_CLI_ELF_OK="$listed" cl install >/dev/null 2>&1
+  [ "$(hexof "$CL/bin/.cli-lock-real/cli")" = "$listed" ] && [ "$(hexof "$CL/bin/cli.pre-cli-lock")" = "$listed" ] && cl check >/dev/null \
+    && [ -z "$(ls "$CL/bin/.cli-lock-real" | grep -E 'cand|new')" ] \
+    && ok "an entry replaced right after the candidate: the LISTED build is published and backed up, never the replacement; no temp links left" \
+    || bad "race: real=$(hexof "$CL/bin/.cli-lock-real/cli" | cut -c1-8) bak=$(hexof "$CL/bin/cli.pre-cli-lock" 2>/dev/null | cut -c1-8) listed=${listed:0:8} unlisted=${unl:0:8}"
+  cl remove >/dev/null 2>&1; rm -rf "$CL/bin/.cli-lock-real"
   # second line: even a LISTED build that names $ORIGIN or ${ORIGIN}, or has the CLI's bw-data beside it, is refused
   for tok in '$ORIGIN' '${ORIGIN}'; do
     cp "$(readlink -f "$(command -v perl)")" "$CL/bin/cli"; printf 'RUNPATH=%s/lib' "$tok" >> "$CL/bin/cli"; sum_o=$(sha256sum < "$CL/bin/cli")

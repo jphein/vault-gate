@@ -80,16 +80,23 @@ install)
     # person verified that build: no RPATH/RUNPATH, only system libraries, no file beside it that it reads relative to
     # itself (wakizashi's 2026.9.1, 2026-11-17: readelf -d shows six NEEDED system libs and no RPATH/RUNPATH; no bw-data).
     # The two cheap checks below stay as a second line.
-    sha=$(sha256sum < "$ENTRY" | cut -d' ' -f1)
-    case " ${VAULT_CLI_ELF_OK:-} " in *" $sha "*) ;; *) echo "$ENTRY is a native build (sha256 $sha) not listed in VAULT_CLI_ELF_OK: verify it (readelf -d: no RPATH/RUNPATH; nothing it reads beside itself), then list its sha256"; exit 1 ;; esac
-    grep -q -a -E '\$(ORIGIN|\{ORIGIN\})' "$ENTRY" && { echo "$ENTRY names \$ORIGIN (executable-relative libraries): refusing to move it"; exit 1; }
-    [ -e "$(dirname "$ENTRY")/${C}-data" ] && { echo "a ${C}-data dir sits beside $ENTRY (the CLI reads it relative to itself): refusing to move it"; exit 1; }
-    elf=1; real="$(dirname "$ENTRY")/.cli-lock-real/$(basename "$ENTRY")"
+    # ONE inode is checked and published (xreview r4): a private candidate hard link is taken first; the hash, the
+    # checks, the published path and the backup all come from it, so an update replacing $ENTRY meanwhile can never get
+    # an unlisted build wrapped (that update is undone by the final rename: run install again after an update).
+    # Not covered: a writer modifying the candidate's inode IN PLACE (the CLI's updates replace the file).
+    elf=1; real="$(dirname "$ENTRY")/.cli-lock-real/$(basename "$ENTRY")"; cand="$real.cand.$$"
     mkdir -p "$(dirname "$real")"
+    ln "$ENTRY" "$cand" || { rm -f "$tmp"; echo "cannot hard-link $ENTRY: nothing changed"; exit 1; }
+    trap 'rm -f "$cand" "$real.new.$$"' EXIT
+    [ -n "${CLI_LOCK_TEST_AFTER_CANDIDATE:-}" ] && sh -c "$CLI_LOCK_TEST_AFTER_CANDIDATE"   # a test seam only
+    sha=$(sha256sum < "$cand" | cut -d' ' -f1)
+    case " ${VAULT_CLI_ELF_OK:-} " in *" $sha "*) ;; *) rm -f "$tmp"; echo "$ENTRY is a native build (sha256 $sha) not listed in VAULT_CLI_ELF_OK: verify it (readelf -d: no RPATH/RUNPATH; nothing it reads beside itself), then list its sha256"; exit 1 ;; esac
+    grep -q -a -E '\$(ORIGIN|\{ORIGIN\})' "$cand" && { rm -f "$tmp"; echo "$ENTRY names \$ORIGIN (executable-relative libraries): refusing to move it"; exit 1; }
+    [ -e "$(dirname "$ENTRY")/${C}-data" ] && { rm -f "$tmp"; echo "a ${C}-data dir sits beside $ENTRY (the CLI reads it relative to itself): refusing to move it"; exit 1; }
     # published atomically: a wrapper already waiting on the lock execs the old inode or the new, never a missing path
     # (already the same inode after a remove + re-install of the same build: nothing to publish; mv refuses that rename)
-    if ! [ "$real" -ef "$ENTRY" ]; then
-      ln "$ENTRY" "$real.new.$$" && mv -f "$real.new.$$" "$real" || { rm -f "$tmp" "$real.new.$$"; echo "cannot hard-link $ENTRY to $real: nothing changed"; exit 1; }
+    if ! [ "$real" -ef "$cand" ]; then
+      ln "$cand" "$real.new.$$" && mv -f "$real.new.$$" "$real" || { rm -f "$tmp"; echo "cannot hard-link the build to $real: nothing changed"; exit 1; }
     fi
     { printf '#!/bin/sh\n%s\n%s\n' "$MARK" "$LINES"; printf 'exec %s "$@"\n' "$(sq "$real")"; } > "$tmp"
   else
@@ -99,7 +106,7 @@ install)
   chmod 755 "$tmp"; sh -n "$tmp" || { rm -f "$tmp"; echo "the wrapped entry does not parse: nothing changed"; exit 1; }
   # the backup is replaced, never written THROUGH: an old backup may be a symlink to the CLI's own code
   rm -f "$bak"
-  if [ "$elf" = 1 ]; then ln "$ENTRY" "$bak"; else cp -P -p "$ENTRY" "$bak"; fi
+  if [ "$elf" = 1 ]; then ln "$cand" "$bak"; else cp -P -p "$ENTRY" "$bak"; fi
   mv -f "$tmp" "$ENTRY"   # one atomic rename: the entry is the old program or the locked script, never missing
   echo "locked: $ENTRY (backup $bak)" ;;
 remove)
