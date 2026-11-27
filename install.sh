@@ -61,7 +61,7 @@ fi
 
 # 2. Symlink scripts
 mkdir -p "$CLAUDE_SCRIPTS"
-for script in vault-gate.sh vault-unlock.sh vault-unlock-inline.sh vault-gate-match.py; do
+for script in vault-gate.sh vault-unlock.sh vault-unlock-inline.sh vault-login.sh vault-gate-match.py; do
     target="$CLAUDE_SCRIPTS/$script"
     src="$REPO_ROOT/$script"
     # Replace existing symlink / file so updates propagate
