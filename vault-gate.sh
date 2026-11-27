@@ -116,8 +116,17 @@ STATUS=$("$BW" status 2>/dev/null \
     || echo "unknown")
 
 if [ "$STATUS" = "unauthenticated" ]; then
-    echo "BLOCKED: Vault not logged in. Run in a terminal: ~/.npm-global/bin/bw login" >&2
-    exit 2
+    # Logged out (a server-side logout, a changed master password, a revoked session): the same window as an unlock,
+    # running vault-login.sh instead (the login asks for the master password and 2FA; JP's hands, never an agent).
+    # Before 2026-11-27 this printed a copy-paste line and exited 2; the window path below is the fix (Sen, JP at katana).
+    LOGIN_SCRIPT="${VAULT_GATE_LOGIN_SCRIPT:-$HOME/.claude/scripts/vault-login.sh}"
+    [ -f "$LOGIN_SCRIPT" ] || LOGIN_SCRIPT="$(cd "$(dirname "$0")" && pwd)/vault-login.sh"
+    if [ ! -f "$LOGIN_SCRIPT" ]; then
+        echo "BLOCKED: Vault not logged in and no vault-login.sh is installed (run vault-gate's install.sh)." >&2
+        exit 2
+    fi
+    UNLOCK_SCRIPT="$LOGIN_SCRIPT"
+    echo "VAULT: not logged in: the window runs vault-login.sh (email, master password, 2FA)." >&2
 fi
 
 # --- Vault is locked — launch interactive unlock ---

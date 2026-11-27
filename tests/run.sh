@@ -37,6 +37,20 @@ chmod +x "$T/bin"/*
 run() { PATH="$T/bin:$PATH" XDG_RUNTIME_DIR="$T/run" HOME="$T" VAULT_GATE_BW="$T/bin/bw" VAULT_GATE_SSH="$T/bin/ssh" VAULT_GATE_MAX_WAIT=2 REMOTE_DESKTOPS="ghost katana wakizashi" "$@" bash "$R/vault-gate.sh" 2>&1; }
 out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
 grep -q "DRY-RUN: would open on wakizashi: systemd-run --user --collect --quiet /usr/bin/ghostty --title='Vault Unlock ($(hostname))' -e ssh -t $(hostname) tmux attach -t vault-unlock" <<<"$out" && [ $rc -eq 0 ] && ok "headless dry run picks the least idle desktop and would open ghostty via systemd-run" || bad "headless dry run: rc=$rc out=$out"
+# logged OUT (status unauthenticated): the same window path, running vault-login.sh (2026-11-27: before this the hook
+# printed a copy-paste "bw login" line and exited 2 while JP sat at katana with no window; never again)
+printf '#!/bin/sh\necho %s\n' "'{\"status\":\"unauthenticated\"}'" > "$T/bin/bw"; chmod +x "$T/bin/bw"
+mkdir -p "$T/.claude/scripts"; printf '#!/bin/bash\nexit 0\n' > "$T/.claude/scripts/vault-login.sh"; chmod +x "$T/.claude/scripts/vault-login.sh"
+out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
+[ $rc -eq 0 ] && grep -q "VAULT: not logged in: the window runs vault-login.sh" <<<"$out" && grep -q "DRY-RUN: would open on wakizashi" <<<"$out" \
+  && ok "logged out: the unlock window path runs vault-login.sh instead of a copy-paste line" || bad "logged-out window: rc=$rc out=$out"
+rm -f "$T/.claude/scripts/vault-login.sh"; out=$(run env VAULT_GATE_DRY_RUN=1); rc=$?
+[ $rc -eq 0 ] && grep -q "VAULT: not logged in" <<<"$out" && ok "logged out with no installed copy: the repo's own vault-login.sh beside the hook is the fallback" || bad "logged-out repo fallback: rc=$rc out=$out"
+# neither the installed copy nor one beside the hook (a gate copied away from the repo): a loud refusal naming the installer
+mkdir -p "$T/gate"; cp "$R/vault-gate.sh" "$T/gate/vault-gate.sh"
+out=$(PATH="$T/bin:$PATH" XDG_RUNTIME_DIR="$T/run" HOME="$T" VAULT_GATE_BW="$T/bin/bw" VAULT_GATE_SSH="$T/bin/ssh" VAULT_GATE_MAX_WAIT=2 REMOTE_DESKTOPS="ghost katana wakizashi" VAULT_GATE_DRY_RUN=1 bash "$T/gate/vault-gate.sh" 2>&1); rc=$?
+[ $rc -eq 2 ] && grep -q "no vault-login.sh is installed" <<<"$out" && ok "logged out with no vault-login.sh anywhere: a loud refusal naming the installer" || bad "logged-out no-script: rc=$rc out=$out"
+printf '#!/bin/sh\necho %s\n' "'{\"status\":\"locked\"}'" > "$T/bin/bw"; chmod +x "$T/bin/bw"   # back to the locked stub
 mkdir -p "$T/run/vault-gate.remote-open"; printf 'wakizashi' > "$T/run/vault-gate.remote-open/desk"; printf 'abc123def456' > "$T/run/vault-gate.remote-open/card"
 out=$(run env); rc=$?
 grep -q "BLOCKED: unlock pending, card abc123def456: a Vault Unlock window is open on wakizashi" <<<"$out" && [ $rc -eq 2 ] && ok "a fresh lock refuses at once with the card id (exit 2)" || bad "fresh lock: rc=$rc out=$out"
