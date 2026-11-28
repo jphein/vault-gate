@@ -329,4 +329,39 @@ printf '{"stateVersion":67,"global_account_activeAccountId":"x"}' > "$CL/data/da
 [[ "$l" == "CHECK vault-cli-state warn · "*"held the host lock"* ]] && ok "CHECK: reads only under the lock (busy → warn, never a false fail)" || bad "CHECK busy: $l"
 cl remove >/dev/null; l=$(cs env); [[ "$l" == "CHECK vault-cli-state warn · "*"not locked"* ]] && ok "CHECK: an unlocked entry → warn" || bad "CHECK unlocked: $l"
 rm -f "$CL/bin/cli" "$CL/checks/vault-cli-state.line"; l=$(cs env); [ -z "$l" ] && ok "CHECK: no CLI on this host (a lane host) → no line" || bad "CHECK no CLI: $l"
+# caller ledger (money c81d2860): one line per call in $XDG_RUNTIME_DIR/vault-calls.log; only allowlisted verb and
+# object words, the item name as a sha prefix, the parent from /proc exe+comm (argv is never read); nothing from any argv
+rm -f "$T/.config/vault-gate/config" "$T/run/vault-calls.log"; mkdir -p "$T/.npm-global/bin"
+printf '#!/bin/sh\necho real-cli-ran\n' > "$T/.npm-global/bin/bw"; chmod +x "$T/.npm-global/bin/bw"
+led() { PATH="$T/bin:$PATH" HOME="$T" XDG_RUNTIME_DIR="$T/run" BW_SESSION=x "$@" >/dev/null 2>&1; cat "$T/run/vault-calls.log" 2>/dev/null; rm -f "$T/run/vault-calls.log"; }
+sha=$(printf '%s' "fixture item name" | sha256sum | cut -c1-12)
+# a real bash -c parent whose argv0 is forged with exec -a and whose command string carries a secret-looking token
+l=$(led bash -c 'exec -a hunter2argv0 bash -c "bash \"$0\" get password \"fixture item name\"; X=hunter2zzzzzzzzzzzzzzzzzzzzzzzz; true"' "$R/bw-wrapper.sh")
+[[ "$l" == *"verb=get obj=password item=$sha parent=bash"* ]] && ! grep -q "fixture item name\|hunter2\|zzzz" <<<"$l" \
+  && ok "wrapper ledger: get password → verb, object, item sha, parent from /proc exe (forged argv0 ignored)" || bad "wrapper ledger get: $l"
+l=$(led bash "$R/bw-wrapper.sh" unlock "hunter2-positional-secret")
+[[ "$l" == *"verb=other obj=- item=-"* ]] && ! grep -q "hunter2" <<<"$l" && ok "wrapper ledger: unlock <secret> → verb other, no argument" || bad "wrapper ledger unlock: $l"
+l=$(led bash "$R/bw-wrapper.sh" get "hunter2-as-object" "x")
+[[ "$l" == *"verb=get obj=other item="* ]] && ! grep -q "hunter2" <<<"$l" && ok "wrapper ledger: unknown object word → other" || bad "wrapper ledger obj: $l"
+l=$(led bash "$R/bw-wrapper.sh" get password)
+[[ "$l" == *"verb=get obj=password item=-"* ]] && ok "wrapper ledger: get with no item → item -" || bad "wrapper ledger no item: $l"
+out=$(PATH="$T/bin:$PATH" HOME="$T" XDG_RUNTIME_DIR="$T/run" BW_SESSION=x bash "$R/bw-wrapper.sh" get password 2>&1); [ "$out" = real-cli-ran ] && ok "wrapper ledger: the CLI still execs after a no-item get" || bad "wrapper ledger exec: $out"
+# a sha256sum that fails: item becomes -, the CLI still runs
+printf '#!/bin/sh\nexit 1\n' > "$T/bin/sha256sum"; chmod +x "$T/bin/sha256sum"
+out=$(PATH="$T/bin:$PATH" HOME="$T" XDG_RUNTIME_DIR="$T/run" BW_SESSION=x bash "$R/bw-wrapper.sh" get password "fixture item name" 2>&1); l=$(cat "$T/run/vault-calls.log" 2>/dev/null); rm -f "$T/run/vault-calls.log" "$T/bin/sha256sum"
+[ "$out" = real-cli-ran ] && [[ "$l" == *"item=- "* ]] && ! grep -q "fixture" <<<"$l" && ok "wrapper ledger: a failing sha256sum → item -, CLI still runs" || bad "wrapper ledger sha fail: out=$out l=$l"
+PATH="$T/bin:$PATH" HOME="$T" XDG_RUNTIME_DIR="$T/run" BW_SESSION=x bash "$R/bw-wrapper.sh" status >/dev/null 2>&1
+[ "$(stat -c %a "$T/run/vault-calls.log" 2>/dev/null)" = 600 ] && ok "wrapper ledger: 0600" || bad "wrapper ledger mode: $(stat -c %a "$T/run/vault-calls.log" 2>/dev/null)"
+chmod 644 "$T/run/vault-calls.log"; PATH="$T/bin:$PATH" HOME="$T" XDG_RUNTIME_DIR="$T/run" BW_SESSION=x bash "$R/bw-wrapper.sh" status >/dev/null 2>&1
+[ "$(stat -c %a "$T/run/vault-calls.log" 2>/dev/null)" = 600 ] && ok "wrapper ledger: an existing 0644 file is forced back to 0600" || bad "wrapper ledger 0644: $(stat -c %a "$T/run/vault-calls.log" 2>/dev/null)"
+rm -f "$T/run/vault-calls.log"; mkfifo "$T/run/vault-calls.log"
+out=$(PATH="$T/bin:$PATH" HOME="$T" XDG_RUNTIME_DIR="$T/run" BW_SESSION=x timeout 5 bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
+[ $rc -eq 0 ] && [ "$out" = real-cli-ran ] && ok "wrapper ledger: a planted FIFO is skipped, no hang, CLI runs" || bad "wrapper ledger fifo: rc=$rc out=$out"
+rm -f "$T/run/vault-calls.log"; ln -s "$T/run/nowhere" "$T/run/vault-calls.log"
+out=$(PATH="$T/bin:$PATH" HOME="$T" XDG_RUNTIME_DIR="$T/run" BW_SESSION=x timeout 5 bash "$R/bw-wrapper.sh" status 2>&1); rc=$?
+[ $rc -eq 0 ] && [ "$out" = real-cli-ran ] && [ ! -e "$T/run/nowhere" ] && ok "wrapper ledger: a dangling symlink is not followed, CLI runs" || bad "wrapper ledger dangling: rc=$rc target=$([ -e "$T/run/nowhere" ] && echo written)"
+rm -f "$T/run/vault-calls.log"
+out=$(PATH="$T/bin:$PATH" HOME="$T" XDG_RUNTIME_DIR="$T/run" BW_SESSION=x VAULT_CALL_LEDGER=0 bash "$R/bw-wrapper.sh" status 2>&1)
+[ ! -e "$T/run/vault-calls.log" ] && ok "wrapper ledger: VAULT_CALL_LEDGER=0 writes nothing" || bad "wrapper ledger off still wrote"
+
 echo "$fails failure(s)"; [ "$fails" -eq 0 ]
