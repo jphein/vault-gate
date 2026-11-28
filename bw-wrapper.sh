@@ -46,18 +46,41 @@ if [ -z "${BW_SESSION:-}" ]; then
 fi
 
 # Caller ledger (money c81d2860, 2026-11-28): one line per CLI call so the busiest consumers can be named
-# (the 11/27 sampler saw 349 password reads in 2 h and no caller). Never a value: the verb and object word,
-# the item NAME only as a sha256 prefix, and the parent's argv with every long slashless token elided.
-# Off with VAULT_CALL_LEDGER=0. File: $XDG_RUNTIME_DIR/vault-calls.log (tmpfs, 0600, gone at logout).
+# (the 11/27 sampler saw 349 password reads in 2 h and no caller). Nothing from the command line is copied:
+# the verb and the object are written only when they are on the allowlists below (anything else is "other",
+# so `unlock <password>` or a stray positional secret can never land here), the item NAME only as a sha256
+# prefix, and the parent only as its program name plus a script basename. The file must be a plain regular
+# file the wrapper owns (a FIFO or symlink planted there is skipped, never opened). Off with VAULT_CALL_LEDGER=0.
+# File: $XDG_RUNTIME_DIR/vault-calls.log (tmpfs, 0600, gone at logout).
 if [ "${VAULT_CALL_LEDGER:-1}" != 0 ]; then
     __rt="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-    __verb="${1:-}"; __obj="${2:-}"; __item=""
-    case "$__verb" in get|edit|delete) [ -n "${3:-}" ] && __item=$(printf '%s' "$3" | sha256sum | cut -c1-12) ;; esac
-    __parent=""
+    __log="$__rt/vault-calls.log"
+    __verb=other; __obj=-; __item=-
+    case "${1:-}" in
+        get|list|create|edit|delete|restore|status|sync|generate|encode|move|share|confirm|send|serve|completion|--version|-v|help|--help) __verb="$1" ;;
+    esac
+    case "$__verb" in
+        get|list|create|edit|delete|restore|move|share)
+            case "${2:-}" in
+                item|items|username|password|uri|totp|notes|exposed|attachment|folder|folders|collection|collections|organization|organizations|org-collection|org-collections|org-members|template|fingerprint|send|sends) __obj="$2" ;;
+                "") __obj=- ;;
+                *) __obj=other ;;
+            esac ;;
+    esac
+    case "$__verb" in
+        get|edit|delete|restore)
+            if [ -n "${3:-}" ]; then __item=$(printf '%s' "$3" | sha256sum | cut -c1-12); fi ;;
+    esac
+    __parent=-
     if [ -r "/proc/$PPID/cmdline" ]; then
-        __parent=$(tr '\0' '\n' < "/proc/$PPID/cmdline" | awk 'length($0)>40 && index($0,"/")==0 {print "…"; next} {print}' | tr '\n' ' ' | cut -c1-160)
+        __parent=$(tr '\0' '\n' < "/proc/$PPID/cmdline" 2>/dev/null | head -2 | while IFS= read -r __t; do
+            case "$__t" in -*|*=*) ;; *) printf '%s ' "$(basename -- "$__t" 2>/dev/null | cut -c1-40)" ;; esac
+        done)
+        __parent="${__parent% }"; [ -n "$__parent" ] || __parent=-
     fi
-    ( umask 077; printf '%s pid=%s ppid=%s verb=%s obj=%s item=%s parent=%s\n' "$(date +%H:%M:%S)" "$$" "$PPID" "$__verb" "$__obj" "$__item" "$__parent" >> "$__rt/vault-calls.log" ) 2>/dev/null || true
+    if [ -d "$__rt" ] && { [ ! -e "$__log" ] || { [ -f "$__log" ] && [ ! -L "$__log" ] && [ -O "$__log" ]; }; }; then
+        ( umask 077; printf '%s pid=%s ppid=%s verb=%s obj=%s item=%s parent=%s\n' "$(date +%H:%M:%S)" "$$" "$PPID" "$__verb" "$__obj" "$__item" "$__parent" >> "$__log" ) 2>/dev/null || true
+    fi
 fi
 
 exec "$REAL_BW" "$@"
