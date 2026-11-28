@@ -45,4 +45,19 @@ if [ -z "${BW_SESSION:-}" ]; then
     fi
 fi
 
+# Caller ledger (money c81d2860, 2026-11-28): one line per CLI call so the busiest consumers can be named
+# (the 11/27 sampler saw 349 password reads in 2 h and no caller). Never a value: the verb and object word,
+# the item NAME only as a sha256 prefix, and the parent's argv with every long slashless token elided.
+# Off with VAULT_CALL_LEDGER=0. File: $XDG_RUNTIME_DIR/vault-calls.log (tmpfs, 0600, gone at logout).
+if [ "${VAULT_CALL_LEDGER:-1}" != 0 ]; then
+    __rt="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    __verb="${1:-}"; __obj="${2:-}"; __item=""
+    case "$__verb" in get|edit|delete) [ -n "${3:-}" ] && __item=$(printf '%s' "$3" | sha256sum | cut -c1-12) ;; esac
+    __parent=""
+    if [ -r "/proc/$PPID/cmdline" ]; then
+        __parent=$(tr '\0' '\n' < "/proc/$PPID/cmdline" | awk 'length($0)>40 && index($0,"/")==0 {print "…"; next} {print}' | tr '\n' ' ' | cut -c1-160)
+    fi
+    ( umask 077; printf '%s pid=%s ppid=%s verb=%s obj=%s item=%s parent=%s\n' "$(date +%H:%M:%S)" "$$" "$PPID" "$__verb" "$__obj" "$__item" "$__parent" >> "$__rt/vault-calls.log" ) 2>/dev/null || true
+fi
+
 exec "$REAL_BW" "$@"

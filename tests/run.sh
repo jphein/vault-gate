@@ -329,4 +329,18 @@ printf '{"stateVersion":67,"global_account_activeAccountId":"x"}' > "$CL/data/da
 [[ "$l" == "CHECK vault-cli-state warn · "*"held the host lock"* ]] && ok "CHECK: reads only under the lock (busy → warn, never a false fail)" || bad "CHECK busy: $l"
 cl remove >/dev/null; l=$(cs env); [[ "$l" == "CHECK vault-cli-state warn · "*"not locked"* ]] && ok "CHECK: an unlocked entry → warn" || bad "CHECK unlocked: $l"
 rm -f "$CL/bin/cli" "$CL/checks/vault-cli-state.line"; l=$(cs env); [ -z "$l" ] && ok "CHECK: no CLI on this host (a lane host) → no line" || bad "CHECK no CLI: $l"
+# caller ledger (money c81d2860): one line per call in $XDG_RUNTIME_DIR/vault-calls.log, the item name only as a sha prefix,
+# the parent's argv with long slashless tokens elided (a value on a command line never lands in the ledger)
+rm -f "$T/.config/vault-gate/config" "$T/run/vault-calls.log"; mkdir -p "$T/.npm-global/bin"
+printf '#!/bin/sh\necho real-cli-ran\n' > "$T/.npm-global/bin/bw"; chmod +x "$T/.npm-global/bin/bw"
+out=$(PATH="$T/bin:$PATH" HOME="$T" XDG_RUNTIME_DIR="$T/run" BW_SESSION=x bash -c 'exec bash "'"$R"'/bw-wrapper.sh" get password "fixture item name" zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz' 2>&1)
+sha=$(printf '%s' "fixture item name" | sha256sum | cut -c1-12)
+l=$(cat "$T/run/vault-calls.log" 2>/dev/null)
+[[ "$l" == *"verb=get obj=password item=$sha "* ]] && ! grep -q "fixture item name" <<<"$l" && ! grep -q "zzzzzzzzzzzz" <<<"$l" \
+  && ok "wrapper ledger: verb, object, item sha prefix; no item name, no long token" || bad "wrapper ledger: $l"
+[ "$(stat -c %a "$T/run/vault-calls.log" 2>/dev/null)" = 600 ] && ok "wrapper ledger: 0600" || bad "wrapper ledger mode: $(stat -c %a "$T/run/vault-calls.log" 2>/dev/null)"
+rm -f "$T/run/vault-calls.log"
+out=$(PATH="$T/bin:$PATH" HOME="$T" XDG_RUNTIME_DIR="$T/run" BW_SESSION=x VAULT_CALL_LEDGER=0 bash "$R/bw-wrapper.sh" status 2>&1)
+[ ! -e "$T/run/vault-calls.log" ] && ok "wrapper ledger: VAULT_CALL_LEDGER=0 writes nothing" || bad "wrapper ledger off still wrote"
+
 echo "$fails failure(s)"; [ "$fails" -eq 0 ]
