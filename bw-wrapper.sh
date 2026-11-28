@@ -49,8 +49,8 @@ fi
 # (the 11/27 sampler saw 349 password reads in 2 h and no caller). Nothing from any command line is copied:
 # the verb and the object are written only when they are on the allowlists below (anything else is "other",
 # so `unlock <password>` or a stray positional secret never lands here), the item NAME only as a sha256
-# prefix, and the parent only as the kernel's view of it (/proc/PPID/exe basename and comm, never argv, which
-# `exec -a` can forge). The write goes only into a missing path or an owned regular non-symlink file (a FIFO,
+# prefix, and the parent only as the basename of /proc/PPID/exe (never argv, which `exec -a` forges, nor comm,
+# which prctl sets). The write goes only into a missing path or an owned regular non-symlink file (a FIFO,
 # a symlink, dangling or not, or someone else's file is skipped), is forced to 0600, and runs under a 2 s
 # timeout; every helper failure is tolerated, so the ledger can never stop the exec below.
 # Off with VAULT_CALL_LEDGER=0. File: $XDG_RUNTIME_DIR/vault-calls.log (tmpfs, gone at logout).
@@ -76,10 +76,9 @@ if [ "${VAULT_CALL_LEDGER:-1}" != 0 ]; then
             fi ;;
     esac
     __pexe=$(readlink "/proc/$PPID/exe" 2>/dev/null) || __pexe=""
-    __pcomm=$(tr -d '\n' < "/proc/$PPID/comm" 2>/dev/null) || __pcomm=""
     __parent="${__pexe##*/}"; [ -n "$__parent" ] || __parent=-
-    [ -n "$__pcomm" ] && [ "$__pcomm" != "$__parent" ] && __parent="$__parent/$__pcomm"
-    __parent=$(printf '%s' "$__parent" | tr -c 'A-Za-z0-9._/+-' '_' | cut -c1-48)
+    __parent=$( { printf '%s' "$__parent" | tr -c 'A-Za-z0-9._+-' '_' | cut -c1-32; } 2>/dev/null ) || __parent=-
+    [ -n "$__parent" ] || __parent=-
     __line="$(date +%H:%M:%S 2>/dev/null || echo -) pid=$$ ppid=$PPID verb=$__verb obj=$__obj item=$__item parent=$__parent"
     ( timeout 2 bash -c '
         rt=$1; line=$2; log="$rt/vault-calls.log"
